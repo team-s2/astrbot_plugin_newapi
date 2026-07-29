@@ -1,0 +1,490 @@
+"""Render new-api flow rows as a light Sankey diagram with Pillow."""
+
+from __future__ import annotations
+
+from collections import defaultdict
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Literal
+
+from PIL import Image, ImageDraw, ImageFont
+
+FlowMetric = Literal["quota", "tokens", "requests"]
+FlowStage = Literal["user", "node", "token", "group", "model", "channel"]
+OverflowMode = Literal["aggregate", "hide"]
+
+PALETTE = (
+    "#48c98e",
+    "#2f72f6",
+    "#f9c51b",
+    "#42c6e9",
+    "#ff8b18",
+    "#d2b5f3",
+    "#8252df",
+    "#9fc5f8",
+    "#ffc565",
+    "#b8e8cd",
+    "#ffe578",
+    "#38557d",
+)
+
+OTHER_LABELS: dict[FlowStage, str] = {
+    "user": "Other users",
+    "node": "Other nodes",
+    "token": "Other tokens",
+    "group": "Other groups",
+    "model": "Other models",
+    "channel": "Other channels",
+}
+
+
+@dataclass(frozen=True)
+class FlowNode:
+    """A single stage value in one flow path."""
+
+    id: str
+    label: str
+    kind: FlowStage
+
+
+@dataclass
+class FlowMetrics:
+    """Metrics accumulated for a flow path."""
+
+    quota: float = 0
+    tokens: float = 0
+    requests: float = 0
+
+    def add(self, other: FlowMetrics) -> None:
+        """Add another metric set in place.
+
+        Args:
+            other: Metrics to add.
+        """
+        self.quota += other.quota
+        self.tokens += other.tokens
+        self.requests += other.requests
+
+    def value(self, metric: FlowMetric) -> float:
+        """Return the configured width metric.
+
+        Args:
+            metric: Metric used to size Sankey nodes and links.
+
+        Returns:
+            Non-negative metric value.
+        """
+        return max(float(getattr(self, metric)), 0)
+
+
+@dataclass(frozen=True)
+class RenderSummary:
+    """Summary of a completed Sankey render."""
+
+    row_count: int
+    node_count: int
+    link_count: int
+
+
+def _number(value: Any) -> float:
+    """Coerce an API value to a non-negative number.
+
+    Args:
+        value: Value returned by new-api.
+
+    Returns:
+        A non-negative float, or zero for invalid input.
+    """
+    try:
+        parsed = float(value or 0)
+    except (TypeError, ValueError):
+        return 0
+    return parsed if parsed >= 0 else 0
+
+
+def _row_node(row: dict[str, Any], stage: FlowStage) -> FlowNode:
+    """Build a stable node identity and label from a flow row.
+
+    Args:
+        row: Flow row returned by new-api.
+        stage: Dimension to extract.
+
+    Returns:
+        The node for the selected stage.
+    """
+    if stage == "user":
+        user_id = int(_number(row.get("user_id")))
+        label = str(
+            row.get("username") or (f"user-{user_id}" if user_id else "Unknown User")
+        )
+        identity = str(user_id) if user_id else label
+    elif stage == "node":
+        label = str(row.get("node_name") or "default-node")
+        identity = label
+    elif stage == "token":
+        token_id = int(_number(row.get("token_id")))
+        label = str(row.get("token_name") or f"Deleted token #{token_id}")
+        identity = str(token_id)
+    elif stage == "group":
+        label = str(row.get("use_group") or "default")
+        identity = label
+    elif stage == "model":
+        label = str(row.get("model_name") or "Unknown model")
+        identity = label
+    else:
+        channel_id = int(_number(row.get("channel_id")))
+        label = str(row.get("channel_name") or f"Channel #{channel_id}")
+        identity = str(channel_id)
+    return FlowNode(id=f"{stage}:{identity}", label=label, kind=stage)
+
+
+def _load_font(size: int, font_path: Path | None) -> ImageFont.FreeTypeFont:
+    """Load a custom, CJK, or portable fallback font.
+
+    Args:
+        size: Font size in pixels.
+        font_path: Optional explicitly configured font file.
+
+    Returns:
+        A Pillow TrueType font.
+    """
+    candidates = [
+        font_path,
+        Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"),
+        Path("/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc"),
+        Path("C:/Windows/Fonts/msyhbd.ttc"),
+        Path("/System/Library/Fonts/PingFang.ttc"),
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+    ]
+    for candidate in candidates:
+        if candidate and candidate.is_file():
+            return ImageFont.truetype(candidate, size)
+    return ImageFont.truetype("DejaVuSans-Bold.ttf", size)
+
+
+def _truncate(text: str, limit: int) -> str:
+    """Shorten a label to the drawing limit.
+
+    Args:
+        text: Original label.
+        limit: Maximum character count.
+
+    Returns:
+        Original or ellipsis-truncated label.
+    """
+    return text if len(text) <= limit else f"{text[: limit - 1]}…"
+
+
+def _bezier(a: float, b: float, c: float, d: float, t: float) -> float:
+    """Evaluate one coordinate of a cubic Bézier curve.
+
+    Args:
+        a: Start coordinate.
+        b: First control coordinate.
+        c: Second control coordinate.
+        d: End coordinate.
+        t: Position along the curve from zero to one.
+
+    Returns:
+        Interpolated coordinate.
+    """
+    return (
+        (1 - t) ** 3 * a + 3 * (1 - t) ** 2 * t * b + 3 * (1 - t) * t**2 * c + t**3 * d
+    )
+
+
+def render_sankey(
+    rows: list[dict[str, Any]],
+    output: Path,
+    stages: list[FlowStage],
+    metric: FlowMetric = "quota",
+    top_limit: int = 20,
+    overflow_mode: OverflowMode = "aggregate",
+    width: int = 1800,
+    height: int = 1120,
+    font_path: Path | None = None,
+) -> RenderSummary:
+    """Render new-api flow data in the visual style of its VChart Sankey.
+
+    Args:
+        rows: Flow rows returned by ``/api/data/flow``.
+        output: Destination PNG path.
+        stages: Ordered stages to display; at least two are required.
+        metric: Width metric: quota, tokens, or requests.
+        top_limit: Maximum named nodes retained in each stage.
+        overflow_mode: Aggregate overflow nodes or hide their entire paths.
+        width: Output width in pixels.
+        height: Output height in pixels.
+        font_path: Optional custom font with CJK support.
+
+    Returns:
+        Counts describing the rendered graph.
+
+    Raises:
+        ValueError: If options are invalid or no positive flow remains.
+    """
+    if len(stages) < 2:
+        raise ValueError("at least two flow stages must be visible")
+    if metric not in ("quota", "tokens", "requests"):
+        raise ValueError(f"unsupported flow metric: {metric}")
+    if overflow_mode not in ("aggregate", "hide"):
+        raise ValueError(f"unsupported overflow mode: {overflow_mode}")
+
+    prepared: list[tuple[list[FlowNode], FlowMetrics]] = []
+    stage_totals: list[defaultdict[str, float]] = [defaultdict(float) for _ in stages]
+    for row in rows:
+        metrics = FlowMetrics(
+            quota=_number(row.get("quota")),
+            tokens=_number(row.get("token_used")),
+            requests=_number(row.get("count")),
+        )
+        value = metrics.value(metric)
+        if value <= 0:
+            continue
+        path = [_row_node(row, stage) for stage in stages]
+        prepared.append((path, metrics))
+        for index, node in enumerate(path):
+            stage_totals[index][node.id] += value
+
+    top_ids: list[set[str]] = []
+    for totals in stage_totals:
+        ordered = sorted(totals, key=lambda node_id: (-totals[node_id], node_id))
+        top_ids.append(set(ordered[:top_limit]))
+
+    node_info: dict[str, FlowNode] = {}
+    paths: dict[tuple[str, ...], FlowMetrics] = {}
+    for path, metrics in prepared:
+        has_overflow = any(
+            node.id not in top_ids[index] for index, node in enumerate(path)
+        )
+        if has_overflow and overflow_mode == "hide":
+            continue
+        normalized: list[FlowNode] = []
+        for index, node in enumerate(path):
+            if node.id in top_ids[index]:
+                normalized.append(node)
+            else:
+                normalized.append(
+                    FlowNode(
+                        id=f"{node.kind}:__other__",
+                        label=OTHER_LABELS[node.kind],
+                        kind=node.kind,
+                    )
+                )
+        ids = tuple(node.id for node in normalized)
+        if ids not in paths:
+            paths[ids] = FlowMetrics()
+        paths[ids].add(metrics)
+        for node in normalized:
+            node_info[node.id] = node
+
+    if not paths:
+        raise ValueError("no positive flow data is available")
+
+    root_ids = sorted({path[0] for path in paths})
+    root_colors = {
+        node_id: PALETTE[index % len(PALETTE)] for index, node_id in enumerate(root_ids)
+    }
+    node_colors: dict[str, str] = {}
+    node_totals: list[defaultdict[str, float]] = [defaultdict(float) for _ in stages]
+    link_totals: list[defaultdict[tuple[str, str], float]] = [
+        defaultdict(float) for _ in range(len(stages) - 1)
+    ]
+    link_colors: list[dict[tuple[str, str], str]] = [{} for _ in range(len(stages) - 1)]
+    for path, metrics in paths.items():
+        value = metrics.value(metric)
+        color = root_colors[path[0]]
+        for index, node_id in enumerate(path):
+            node_totals[index][node_id] += value
+            node_colors.setdefault(node_id, color)
+        for index in range(len(path) - 1):
+            key = (path[index], path[index + 1])
+            link_totals[index][key] += value
+            link_colors[index].setdefault(key, color)
+
+    margin = max(round(height * 0.025), 16)
+    node_width = max(round(width * 0.0155), 14)
+    node_gap = 14
+    min_node_height = 8
+    node_x = [
+        margin + (width - 2 * margin - node_width) * index / (len(stages) - 1)
+        for index in range(len(stages))
+    ]
+    positions: list[dict[str, dict[str, Any]]] = []
+    for index, totals in enumerate(node_totals):
+        ordered = sorted(
+            totals,
+            key=lambda node_id: (-totals[node_id], node_info[node_id].label),
+        )
+        available = height - 2 * margin - node_gap * max(len(ordered) - 1, 0)
+        baseline = min(min_node_height, available / max(len(ordered), 1))
+        flexible = max(available - baseline * len(ordered), 0)
+        total = sum(totals.values()) or 1
+        cursor = float(margin)
+        stage_positions: dict[str, dict[str, Any]] = {}
+        for node_id in ordered:
+            node_height = baseline + flexible * totals[node_id] / total
+            stage_positions[node_id] = {
+                "x": node_x[index],
+                "y0": cursor,
+                "y1": cursor + node_height,
+                "value": totals[node_id],
+                "color": node_colors[node_id],
+            }
+            cursor += node_height + node_gap
+        positions.append(stage_positions)
+
+    links: list[dict[str, Any]] = []
+    for stage, totals in enumerate(link_totals):
+        by_source: defaultdict[str, list[tuple[tuple[str, str], float]]] = defaultdict(
+            list
+        )
+        for key, value in totals.items():
+            by_source[key[0]].append((key, value))
+        alphas: dict[tuple[str, str], float] = {}
+        for source_links in by_source.values():
+            source_links.sort(key=lambda item: (-item[1], item[0]))
+            denominator = max(len(source_links) - 1, 1)
+            for index, (key, _value) in enumerate(source_links):
+                alphas[key] = (
+                    0.34 if len(source_links) == 1 else 0.24 + index / denominator * 0.2
+                )
+
+        source_cursor = {
+            node_id: node["y0"] for node_id, node in positions[stage].items()
+        }
+        target_cursor = {
+            node_id: node["y0"] for node_id, node in positions[stage + 1].items()
+        }
+        ordered_links = sorted(
+            totals.items(),
+            key=lambda item: (
+                positions[stage][item[0][0]]["y0"],
+                positions[stage + 1][item[0][1]]["y0"],
+            ),
+        )
+        for (source, target), value in ordered_links:
+            source_node = positions[stage][source]
+            target_node = positions[stage + 1][target]
+            source_height = (
+                (source_node["y1"] - source_node["y0"]) * value / source_node["value"]
+            )
+            target_height = (
+                (target_node["y1"] - target_node["y0"]) * value / target_node["value"]
+            )
+            key = (source, target)
+            links.append(
+                {
+                    "x0": source_node["x"] + node_width,
+                    "x1": target_node["x"],
+                    "sy0": source_cursor[source],
+                    "sy1": source_cursor[source] + source_height,
+                    "ty0": target_cursor[target],
+                    "ty1": target_cursor[target] + target_height,
+                    "color": link_colors[stage][key],
+                    "alpha": alphas[key],
+                    "value": value,
+                }
+            )
+            source_cursor[source] += source_height
+            target_cursor[target] += target_height
+
+    image = Image.new("RGB", (width, height), "#ffffff")
+    overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    link_draw = ImageDraw.Draw(overlay)
+    for link in sorted(links, key=lambda item: item["value"], reverse=True):
+        control = (link["x1"] - link["x0"]) * 0.48
+        top: list[tuple[float, float]] = []
+        bottom: list[tuple[float, float]] = []
+        for step in range(31):
+            t = step / 30
+            x = _bezier(
+                link["x0"],
+                link["x0"] + control,
+                link["x1"] - control,
+                link["x1"],
+                t,
+            )
+            top.append(
+                (
+                    x,
+                    _bezier(
+                        link["sy0"],
+                        link["sy0"],
+                        link["ty0"],
+                        link["ty0"],
+                        t,
+                    ),
+                )
+            )
+            bottom.append(
+                (
+                    x,
+                    _bezier(
+                        link["sy1"],
+                        link["sy1"],
+                        link["ty1"],
+                        link["ty1"],
+                        t,
+                    ),
+                )
+            )
+        color = link["color"].lstrip("#")
+        rgb = tuple(int(color[offset : offset + 2], 16) for offset in (0, 2, 4))
+        link_draw.polygon(
+            top + list(reversed(bottom)),
+            fill=(*rgb, round(link["alpha"] * 255)),
+        )
+    image = Image.alpha_composite(image.convert("RGBA"), overlay).convert("RGB")
+    draw = ImageDraw.Draw(image)
+    font = _load_font(max(round(height * 0.018), 14), font_path)
+    min_label_gap = max(round(height * 0.024), 22)
+
+    for stage, stage_positions in enumerate(positions):
+        ordered_nodes = sorted(stage_positions.items(), key=lambda item: item[1]["y0"])
+        label_centers: list[float] = []
+        for _node_id, node in ordered_nodes:
+            desired = (node["y0"] + node["y1"]) / 2
+            label_centers.append(
+                max(
+                    desired,
+                    label_centers[-1] + min_label_gap
+                    if label_centers
+                    else margin + min_label_gap / 2,
+                )
+            )
+        if label_centers and label_centers[-1] > height - margin:
+            label_centers[-1] = height - margin
+            for index in range(len(label_centers) - 2, -1, -1):
+                label_centers[index] = min(
+                    label_centers[index],
+                    label_centers[index + 1] - min_label_gap,
+                )
+
+        for (node_id, node), label_center in zip(
+            ordered_nodes, label_centers, strict=True
+        ):
+            x = node["x"]
+            draw.rectangle(
+                (x, node["y0"], x + node_width, node["y1"]),
+                fill=node["color"],
+                outline="#b7c0cc",
+                width=1,
+            )
+            is_last = stage == len(stages) - 1
+            label_x = x - 5 if is_last else x + node_width + 4
+            draw.text(
+                (label_x, label_center),
+                _truncate(node_info[node_id].label, 28),
+                font=font,
+                fill="#374151",
+                anchor="rm" if is_last else "lm",
+            )
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    image.save(output, "PNG", optimize=True)
+    return RenderSummary(
+        row_count=len(rows),
+        node_count=sum(len(stage) for stage in positions),
+        link_count=len(links),
+    )

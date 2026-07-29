@@ -1,0 +1,5 @@
+name: astrbot_plugin_newapi
+description: 查询 new-api 渠道信息并绘制 Dashboard 流图
+version: 1.0.0
+author: team-s2
+repo: https://github.com/team-s2/astrbot_plugin_newapi

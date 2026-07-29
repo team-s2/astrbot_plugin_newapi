@@ -1,0 +1,68 @@
+{
+  "base_url": {
+    "description": "new-api 地址",
+    "type": "string",
+    "hint": "例如 https://new-api.example.com，不要填写末尾的 /。",
+    "default": ""
+  },
+  "access_token": {
+    "description": "new-api Access Token",
+    "type": "string",
+    "password": true,
+    "hint": "在 new-api 个人设置中生成的访问令牌，不是模型 API Key。",
+    "default": ""
+  },
+  "user_id": {
+    "description": "new-api 用户 ID",
+    "type": "int",
+    "hint": "Access Token 所属用户的数字 ID。流图需要管理员权限；令牌和节点维度需要 Root 权限。",
+    "default": 1
+  },
+  "request_timeout": {
+    "description": "请求超时（秒）",
+    "type": "int",
+    "default": 20
+  },
+  "channel_list_limit": {
+    "description": "渠道列表最多显示数量",
+    "type": "int",
+    "default": 30
+  },
+  "flow_hours": {
+    "description": "流图时间范围（小时）",
+    "type": "int",
+    "hint": "最大 720 小时（30 天）。",
+    "default": 24
+  },
+  "flow_stages": {
+    "description": "流图显示阶段",
+    "type": "list",
+    "options": ["user", "node", "token", "group", "model", "channel"],
+    "hint": "按此顺序绘制，至少选择两个阶段。",
+    "default": ["token", "model", "channel"]
+  },
+  "flow_metric": {
+    "description": "流图宽度指标",
+    "type": "string",
+    "options": ["quota", "tokens", "requests"],
+    "default": "quota"
+  },
+  "flow_top_n": {
+    "description": "每阶段保留的 Top N",
+    "type": "int",
+    "default": 20
+  },
+  "flow_overflow": {
+    "description": "Top N 以外的数据",
+    "type": "string",
+    "options": ["aggregate", "hide"],
+    "labels": ["合并为 Other", "隐藏整条路径"],
+    "default": "aggregate"
+  },
+  "font_path": {
+    "description": "自定义字体文件路径",
+    "type": "string",
+    "hint": "可选。镜像没有 Noto Sans CJK 时，填写支持中文的 TTF/TTC 文件路径。",
+    "default": ""
+  }
+}
