@@ -70,7 +70,6 @@ class NewApiPlugin(star.Star):
     def newapi(self) -> None:
         """Group new-api administration commands."""
 
-    @filter.permission_type(filter.PermissionType.ADMIN)
     @newapi.command("channel_list")
     async def channel_list(self, event: AstrMessageEvent):
         """List configured new-api channels.
@@ -97,7 +96,6 @@ class NewApiPlugin(star.Star):
             logger.warning("Failed to list new-api channels: %s", error)
             yield event.plain_result(f"查询 new-api 失败：{error}")
 
-    @filter.permission_type(filter.PermissionType.ADMIN)
     @newapi.command("channel_show")
     async def channel_show(self, event: AstrMessageEvent, channel: GreedyStr):
         """Show one channel and Codex subscription usage when available.
@@ -191,7 +189,6 @@ class NewApiPlugin(star.Star):
             logger.warning("Failed to show new-api channel: %s", error)
             yield event.plain_result(f"查询 new-api 失败：{error}")
 
-    @filter.permission_type(filter.PermissionType.ADMIN)
     @newapi.command("flow")
     async def flow(self, event: AstrMessageEvent):
         """Render and send the configured new-api Dashboard flow.
