@@ -111,6 +111,8 @@ class NewApiPlugin(star.Star):
                     f"  {type_name} · {status} · {group}"
                 )
                 lines.append(f"  余额 ${balance:.4f} · 已用 ${used_quota:.4f}")
+                if ch is not shown[-1]:
+                    lines.append("")
             if total > limit:
                 lines.append("")
                 lines.append("可用 /newapi channel <名称或 ID> 查看具体渠道。")
