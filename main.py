@@ -137,7 +137,7 @@ class NewApiPlugin(star.Star):
                 separator.join(_pad(h, col_widths[i]) for i, h in enumerate(headers))
             )
             lines.append(
-                "─" * (sum(col_widths) + len(separator) * (len(headers) - 1))
+                "-" * (sum(col_widths) + len(separator) * (len(headers) - 1))
             )
             for row in rows:
                 lines.append(
