@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import cast
@@ -35,6 +36,19 @@ CHANNEL_TYPES = {
     58: "Advanced Custom",
 }
 CHANNEL_STATUSES = {0: "未知", 1: "启用", 2: "手动禁用", 3: "自动禁用"}
+
+
+def _display_width(text: str) -> int:
+    """Return display width counting CJK characters as 2 columns."""
+    return sum(
+        2 if unicodedata.east_asian_width(ch) in ("F", "W") else 1 for ch in text
+    )
+
+
+def _pad(text: str, width: int) -> str:
+    """Left-justify *text* to *width* display columns."""
+    diff = width - _display_width(text)
+    return text + " " * max(0, diff)
 
 
 @star.register(
@@ -70,48 +84,85 @@ class NewApiPlugin(star.Star):
     def newapi(self) -> None:
         """Group new-api administration commands."""
 
-    @newapi.command("channel_list")
-    async def channel_list(self, event: AstrMessageEvent):
-        """List configured new-api channels.
+    @newapi.command("channel")
+    async def channel(self, event: AstrMessageEvent, channel: GreedyStr = ""):
+        """List all channels in table format or show details for one.
+
+        Without arguments, lists channels as a table.
+        With a channel name or ID, shows that channel's details.
 
         Args:
             event: Incoming AstrBot message event.
+            channel: Optional channel name or numeric ID.
         """
+        query = (channel or "").strip()
+        if query:
+            async for result in self._show_channel(event, query):
+                yield result
+        else:
+            async for result in self._list_channels(event):
+                yield result
+
+    async def _list_channels(self, event: AstrMessageEvent):
+        """List all channels in a table format."""
         try:
             channels, total = await self.client.list_channels()
             limit = max(1, min(int(self.config.get("channel_list_limit", 30)), 100))
-            lines = [f"new-api 渠道（显示 {min(len(channels), limit)}/{total}）"]
-            for channel in channels[:limit]:
-                channel_type = int(channel.get("type", 0))
-                status = CHANNEL_STATUSES.get(int(channel.get("status", 0)), "未知")
-                type_name = CHANNEL_TYPES.get(channel_type, f"类型 {channel_type}")
+            shown = channels[:limit]
+
+            headers = ["ID", "名称", "类型", "状态", "分组"]
+            rows = []
+            for ch in shown:
+                ch_type = int(ch.get("type", 0))
+                type_name = CHANNEL_TYPES.get(ch_type, f"类型 {ch_type}")
+                status = CHANNEL_STATUSES.get(int(ch.get("status", 0)), "未知")
+                rows.append([
+                    f"#{ch.get('id')}",
+                    str(ch.get("name") or "未命名"),
+                    type_name,
+                    status,
+                    str(ch.get("group") or "default"),
+                ])
+
+            col_widths = []
+            for i, header in enumerate(headers):
+                max_cell = max(
+                    (_display_width(row[i]) for row in rows), default=0
+                )
+                col_widths.append(max(_display_width(header), max_cell))
+
+            separator = "  "
+            lines = [f"new-api 渠道（显示 {len(shown)}/{total}）"]
+            lines.append(
+                separator.join(_pad(h, col_widths[i]) for i, h in enumerate(headers))
+            )
+            lines.append(
+                "-" * (sum(col_widths) + len(separator) * (len(headers) - 1))
+            )
+            for row in rows:
                 lines.append(
-                    f"#{channel.get('id')}  {channel.get('name') or '未命名'}"
-                    f"  · {type_name} · {status} · {channel.get('group') or 'default'}"
+                    separator.join(
+                        _pad(row[i], col_widths[i]) for i in range(len(row))
+                    )
                 )
             if total > limit:
-                lines.append("可用 /newapi channel_show <名称或 ID> 查看具体渠道。")
+                lines.append("")
+                lines.append("可用 /newapi channel <名称或 ID> 查看具体渠道。")
             yield event.plain_result("\n".join(lines))
         except NewApiError as error:
             logger.warning("Failed to list new-api channels: %s", error)
             yield event.plain_result(f"查询 new-api 失败：{error}")
 
-    @newapi.command("channel_show")
-    async def channel_show(self, event: AstrMessageEvent, channel: GreedyStr):
-        """Show one channel and Codex subscription usage when available.
-
-        Args:
-            event: Incoming AstrBot message event.
-            channel: Channel name or numeric ID.
-        """
+    async def _show_channel(self, event: AstrMessageEvent, query: str):
+        """Show one channel and Codex subscription usage when available."""
         try:
-            found = await self.client.find_channel(channel)
+            found = await self.client.find_channel(query)
             channel_id = int(found.get("id", 0))
             if not channel_id:
                 raise NewApiError("new-api 返回了无效的渠道 ID")
             found = await self.client.get(f"/api/channel/{channel_id}")
             if not isinstance(found, dict):
-                raise NewApiError(f"未找到渠道：{channel}")
+                raise NewApiError(f"未找到渠道：{query}")
 
             channel_type = int(found.get("type", 0))
             status = int(found.get("status", 0))

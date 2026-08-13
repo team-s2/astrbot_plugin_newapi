@@ -6,8 +6,8 @@
 
 命令仅限 AstrBot 管理员使用：
 
-- `/newapi channel_list`：列出渠道
-- `/newapi channel_show <渠道名称或 ID>`：查看渠道详情；Codex 渠道会同时查询订阅限额和重置次数
+- `/newapi channel`：以表格形式列出所有渠道
+- `/newapi channel <渠道名称或 ID>`：查看渠道详情；Codex 渠道会同时查询订阅限额和重置次数
 - `/newapi flow`：按后台配置生成流图并发送图片
 
 插件不会修改渠道、消费重置次数或执行其他写操作。
@@ -27,7 +27,7 @@ Authorization: Bearer <access_token>
 New-Api-User: <user_id>
 ```
 
-`channel_*` 和 `/api/data/flow` 需要 new-api 管理员权限。若 Flow 需要显示 `token` 或 `node` 阶段，应使用 Root 用户的 Access Token；普通管理员能够获得的 Flow 维度较少。
+`channel` 和 `/api/data/flow` 需要 new-api 管理员权限。若 Flow 需要显示 `token` 或 `node` 阶段，应使用 Root 用户的 Access Token；普通管理员能够获得的 Flow 维度较少。
 
 ## 流图配置
 
