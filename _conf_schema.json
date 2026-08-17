@@ -1,22 +1,48 @@
 {
-  "base_url": {
-    "description": "new-api 地址",
-    "type": "string",
-    "hint": "例如 https://new-api.example.com，不要填写末尾的 /。",
-    "default": ""
-  },
-  "access_token": {
-    "description": "new-api Access Token",
-    "type": "string",
-    "password": true,
-    "hint": "在 new-api 个人设置中生成的访问令牌，不是模型 API Key。",
-    "default": ""
-  },
-  "user_id": {
-    "description": "new-api 用户 ID",
-    "type": "int",
-    "hint": "Access Token 所属用户的数字 ID。流图需要管理员权限；令牌和节点维度需要 Root 权限。",
-    "default": 1
+  "instances": {
+    "description": "new-api 实例",
+    "type": "template_list",
+    "hint": "添加实例并绑定可访问它的 UMO。可在对应会话中使用 /sid 获取 UMO。",
+    "templates": {
+      "newapi": {
+        "name": "new-api 实例",
+        "display_item": "name",
+        "items": {
+          "name": {
+            "description": "实例名称",
+            "type": "string",
+            "hint": "用于区分输出中的不同实例。",
+            "default": ""
+          },
+          "base_url": {
+            "description": "new-api 地址",
+            "type": "string",
+            "hint": "例如 https://new-api.example.com，不要填写末尾的 /。",
+            "default": ""
+          },
+          "access_token": {
+            "description": "new-api Access Token",
+            "type": "string",
+            "password": true,
+            "hint": "在 new-api 个人设置中生成的访问令牌，不是模型 API Key。",
+            "default": ""
+          },
+          "user_id": {
+            "description": "new-api 用户 ID",
+            "type": "int",
+            "hint": "Access Token 所属用户的数字 ID。流图需要管理员权限；令牌和节点维度需要 Root 权限。",
+            "default": 1
+          },
+          "umos": {
+            "description": "绑定的 UMO",
+            "type": "list",
+            "hint": "仅精确匹配完整 UMO；一个 UMO 只能绑定一个实例。",
+            "default": []
+          }
+        }
+      }
+    },
+    "default": []
   },
   "request_timeout": {
     "description": "请求超时（秒）",

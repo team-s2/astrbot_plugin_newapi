@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 from uuid import uuid4
@@ -45,6 +46,10 @@ FLOW_DURATION_UNITS = {"m": 60, "h": 3600, "d": 86400}
 MAX_FLOW_DURATION = 30 * 86400
 
 
+class NewApiBindingError(NewApiError):
+    """The current UMO has no configured new-api tenant."""
+
+
 def parse_flow_duration(value: str) -> int:
     """Convert a compact duration such as ``30m``, ``1h`` or ``7d`` to seconds."""
     match = re.fullmatch(r"([1-9]\d*)([mhd])", value.strip(), re.IGNORECASE)
@@ -56,11 +61,19 @@ def parse_flow_duration(value: str) -> int:
     return seconds
 
 
+@dataclass(frozen=True, slots=True)
+class NewApiInstance:
+    """A configured new-api tenant and its authenticated client."""
+
+    name: str
+    client: NewApiClient
+
+
 @star.register(
     "astrbot_plugin_newapi",
     "team-s2",
     "查询 new-api 渠道信息并绘制 Dashboard 流图",
-    "1.1.0",
+    "1.2.0",
 )
 class NewApiPlugin(star.Star):
     """Expose read-only new-api administration commands to AstrBot admins."""
@@ -74,16 +87,80 @@ class NewApiPlugin(star.Star):
         """
         super().__init__(context)
         self.config = config
-        self.client = NewApiClient(
-            str(config.get("base_url", "")),
-            str(config.get("access_token", "")),
-            int(config.get("user_id", 0)),
-            float(config.get("request_timeout", 20)),
-        )
+        self.instances: list[NewApiInstance] = []
+        self.instances_by_umo: dict[str, NewApiInstance] = {}
+        self._load_instances()
 
     async def terminate(self) -> None:
-        """Release the HTTP session when AstrBot unloads the plugin."""
-        await self.client.close()
+        """Release all HTTP sessions when AstrBot unloads the plugin."""
+        await asyncio.gather(*(item.client.close() for item in self.instances))
+
+    def _load_instances(self) -> None:
+        """Validate configured tenants and build the exact UMO routing table."""
+        raw_instances = self.config.get("instances", [])
+        if not isinstance(raw_instances, list):
+            raise ValueError("new-api 实例配置必须是数组")
+
+        try:
+            timeout = float(self.config.get("request_timeout", 20))
+        except (TypeError, ValueError) as error:
+            raise ValueError("new-api 请求超时必须是数字") from error
+        if timeout <= 0:
+            raise ValueError("new-api 请求超时必须大于 0")
+        for index, raw_instance in enumerate(raw_instances, start=1):
+            if not isinstance(raw_instance, dict):
+                raise ValueError(f"new-api 实例 #{index} 配置格式错误")
+
+            name = str(raw_instance.get("name") or "").strip()
+            base_url = str(raw_instance.get("base_url") or "").strip()
+            access_token = str(raw_instance.get("access_token") or "").strip()
+            try:
+                user_id = int(raw_instance.get("user_id") or 0)
+            except (TypeError, ValueError) as error:
+                raise ValueError(f"new-api 实例 #{index} 的用户 ID 无效") from error
+            if not name:
+                raise ValueError(f"new-api 实例 #{index} 缺少实例名称")
+            if not base_url:
+                raise ValueError(f"new-api 实例“{name}”缺少地址")
+            if not access_token:
+                raise ValueError(f"new-api 实例“{name}”缺少 Access Token")
+            if user_id <= 0:
+                raise ValueError(f"new-api 实例“{name}”的用户 ID 必须为正整数")
+
+            raw_umos = raw_instance.get("umos", [])
+            if not isinstance(raw_umos, list):
+                raise ValueError(f"new-api 实例“{name}”的 UMO 必须是数组")
+
+            instance = NewApiInstance(
+                name=name,
+                client=NewApiClient(base_url, access_token, user_id, timeout),
+            )
+            self.instances.append(instance)
+            for raw_umo in raw_umos:
+                umo = str(raw_umo or "").strip()
+                umo_parts = umo.split(":", 2)
+                if len(umo_parts) != 3 or not all(umo_parts):
+                    raise ValueError(
+                        f"new-api 实例“{name}”包含无效 UMO：{umo or '<空>'}"
+                    )
+                existing = self.instances_by_umo.get(umo)
+                if existing is not None and existing is not instance:
+                    raise ValueError(
+                        f"UMO {umo} 同时绑定了实例“{existing.name}”和“{name}”"
+                    )
+                self.instances_by_umo[umo] = instance
+
+    def _instance_for(self, event: AstrMessageEvent) -> NewApiInstance:
+        """Resolve the tenant bound to the event's exact UMO."""
+        umo = event.unified_msg_origin
+        instance = self.instances_by_umo.get(umo)
+        if instance is None:
+            raise NewApiBindingError(
+                "当前会话未绑定 new-api 实例。\n"
+                f"UMO：{umo}\n"
+                "请使用 /sid 确认 UMO，并在插件配置中完成绑定。"
+            )
+        return instance
 
     @filter.command_group("newapi")
     def newapi(self) -> None:
@@ -100,20 +177,29 @@ class NewApiPlugin(star.Star):
             event: Incoming AstrBot message event.
             channel: Optional channel name or numeric ID.
         """
+        try:
+            instance = self._instance_for(event)
+        except NewApiBindingError as error:
+            yield event.plain_result(str(error))
+            return
+
         query = (channel or "").strip()
         if query:
-            async for result in self._show_channel(event, query):
+            async for result in self._show_channel(event, instance, query):
                 yield result
         else:
-            async for result in self._list_channels(event):
+            async for result in self._list_channels(event, instance):
                 yield result
 
-    async def _list_channels(self, event: AstrMessageEvent):
+    async def _list_channels(
+        self, event: AstrMessageEvent, instance: NewApiInstance
+    ):
         """List all channels with usage information in a list format."""
+        client = instance.client
         try:
             channels_result, quota_per_unit_result = await asyncio.gather(
-                self.client.list_channels(),
-                self.client.quota_per_unit(),
+                client.list_channels(),
+                client.quota_per_unit(),
                 return_exceptions=True,
             )
             if isinstance(channels_result, Exception):
@@ -134,14 +220,17 @@ class NewApiPlugin(star.Star):
 
             account_channels = [ch for ch in shown if self._account_info_kind(ch)]
             account_results = await asyncio.gather(
-                *(self._fetch_account_info(ch) for ch in account_channels)
+                *(self._fetch_account_info(client, ch) for ch in account_channels)
             )
             account_info = {
                 int(ch.get("id") or 0): result
                 for ch, result in zip(account_channels, account_results, strict=True)
             }
 
-            lines = [f"new-api 渠道（显示 {len(shown)}/{total}）", ""]
+            lines = [
+                f"【{instance.name}】new-api 渠道（显示 {len(shown)}/{total}）",
+                "",
+            ]
             for ch in shown:
                 type_name = self._channel_type_name(ch)
                 status = CHANNEL_STATUSES.get(int(ch.get("status", 0)), "未知")
@@ -170,20 +259,26 @@ class NewApiPlugin(star.Star):
             logger.warning("Failed to list new-api channels: %s", error)
             yield event.plain_result(f"查询 new-api 失败：{error}")
 
-    async def _show_channel(self, event: AstrMessageEvent, query: str):
+    async def _show_channel(
+        self,
+        event: AstrMessageEvent,
+        instance: NewApiInstance,
+        query: str,
+    ):
         """Show one channel and subscription Account Info when available."""
+        client = instance.client
         try:
-            found = await self.client.find_channel(query)
+            found = await client.find_channel(query)
             channel_id = int(found.get("id", 0))
             if not channel_id:
                 raise NewApiError("new-api 返回了无效的渠道 ID")
-            found = await self.client.get(f"/api/channel/{channel_id}")
+            found = await client.get(f"/api/channel/{channel_id}")
             if not isinstance(found, dict):
                 raise NewApiError(f"未找到渠道：{query}")
 
             quota_per_unit_result, account_info = await asyncio.gather(
-                self.client.quota_per_unit(),
-                self._fetch_account_info(found, include_credits=True),
+                client.quota_per_unit(),
+                self._fetch_account_info(client, found, include_credits=True),
                 return_exceptions=True,
             )
             status = int(found.get("status", 0))
@@ -191,7 +286,7 @@ class NewApiPlugin(star.Star):
                 item for item in str(found.get("models") or "").split(",") if item
             ]
             lines = [
-                f"渠道 #{channel_id} · {found.get('name') or '未命名'}",
+                f"【{instance.name}】渠道 #{channel_id} · {found.get('name') or '未命名'}",
                 f"类型：{self._channel_type_name(found)}",
                 f"状态：{CHANNEL_STATUSES.get(status, '未知')}",
                 f"分组：{found.get('group') or 'default'}",
@@ -237,6 +332,7 @@ class NewApiPlugin(star.Star):
         """
         output: Path | None = None
         try:
+            instance = self._instance_for(event)
             raw_stages = self.config.get("flow_stages", ["token", "model", "channel"])
             valid_stages = {"user", "node", "token", "group", "model", "channel"}
             stages = [
@@ -256,7 +352,9 @@ class NewApiPlugin(star.Star):
                 )
             )
             end_timestamp = int(time.time())
-            rows = await self.client.flow(end_timestamp - range_seconds, end_timestamp)
+            rows = await instance.client.flow(
+                end_timestamp - range_seconds, end_timestamp
+            )
             if not rows:
                 raise NewApiError("所选时间范围内没有流图数据")
 
@@ -282,7 +380,12 @@ class NewApiPlugin(star.Star):
                 summary.link_count,
             )
             yield event.image_result(str(output))
-        except (NewApiError, ValueError, OSError) as error:
+        except NewApiBindingError as error:
+            yield event.plain_result(str(error))
+        except NewApiError as error:
+            logger.warning("Failed to render new-api flow: %s", error)
+            yield event.plain_result(f"生成 new-api 流图失败：{error}")
+        except (ValueError, OSError) as error:
             logger.warning("Failed to render new-api flow: %s", error)
             yield event.plain_result(f"生成 new-api 流图失败：{error}")
 
@@ -304,27 +407,30 @@ class NewApiPlugin(star.Star):
         return CHANNEL_TYPES.get(channel_type, f"类型 {channel_type}")
 
     async def _fetch_account_info(
-        self, channel: dict[str, Any], include_credits: bool = False
+        self,
+        client: NewApiClient,
+        channel: dict[str, Any],
+        include_credits: bool = False,
     ) -> tuple[str, object, object | None] | None:
         channel_id = int(channel.get("id") or 0)
         kind = self._account_info_kind(channel)
         if kind == "codex":
             if include_credits:
                 usage, credits = await asyncio.gather(
-                    self.client.codex_usage(channel_id),
-                    self.client.codex_reset_credits(channel_id),
+                    client.codex_usage(channel_id),
+                    client.codex_reset_credits(channel_id),
                     return_exceptions=True,
                 )
             else:
                 try:
-                    usage = await self.client.codex_usage(channel_id)
+                    usage = await client.codex_usage(channel_id)
                 except NewApiError as error:
                     usage = error
                 credits = None
             return kind, usage, credits
         if kind == "zhipu":
             try:
-                usage = await self.client.zhipu_coding_plan_usage(channel_id)
+                usage = await client.zhipu_coding_plan_usage(channel_id)
             except NewApiError as error:
                 usage = error
             return kind, usage, None
