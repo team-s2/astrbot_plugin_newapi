@@ -18,8 +18,8 @@
 
 1. 在每个 new-api 实例的个人设置中创建 Access Token。
 2. 在需要绑定的 AstrBot 会话中使用 `/sid` 获取完整 UMO。
-3. 在插件配置的“new-api 实例”中添加实例，填写名称、地址、Access Token、用户 ID 和绑定的 UMO。
-4. 选择所有实例共享的 Flow 默认时间范围、可见阶段、Top N 和溢出处理方式。
+3. 在插件配置的“new-api 实例”中添加实例，填写名称、地址、Access Token、用户 ID、绑定的 UMO 和该实例的 Flow 可见阶段。
+4. 选择所有实例共享的 Flow 默认时间范围、Top N 和溢出处理方式。
 
 每个 UMO 只能精确绑定到一个实例。未绑定的会话无法执行查询，也不会回退到其他实例；同一个实例可以绑定多个 UMO。例如：
 
@@ -32,6 +32,10 @@ instances:
     umos:
       - qq:GroupMessage:123456
       - telegram:GroupMessage:789012
+    flow_stages:
+      - token
+      - model
+      - channel
 ```
 
 插件使用以下请求头访问 new-api：
@@ -49,7 +53,7 @@ New-Api-User: <user_id>
 
 `user → node → token → group → model → channel`
 
-后台配置只控制哪些阶段可见，图片始终严格按照上述顺序从左向右绘制。默认只显示 `token → model → channel`，以 API 返回的实际 `token_used` 决定流宽并在节点标签中显示 token 数。每阶段保留 Top 20，其余数据合并为 Other；也可以选择直接隐藏 Top N 以外路径。
+每个 new-api 实例独立配置可见阶段，图片始终严格按照上述顺序从左向右绘制。默认只显示 `token → model → channel`，以 API 返回的实际 `token_used` 决定流宽并在节点标签中显示 token 数。所有实例共享 Top N 和溢出处理设置；默认每阶段保留 Top 20，其余数据合并为 Other，也可以选择直接隐藏 Top N 以外路径。
 
 流图以 3600 × 2240 为最小画布，并根据实际列数、标签宽度和各列节点数量自动扩大。提高 Top N 会显示更多节点，同时自动增加画布高度，避免标签从上下边缘溢出。
 

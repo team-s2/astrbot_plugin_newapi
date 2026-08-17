@@ -2,6 +2,6 @@ name: astrbot_plugin_newapi
 display_name: new-api 管理
 desc: 按 AstrBot 会话查询多个 new-api 实例的渠道、订阅套餐余量并绘制 Dashboard Flow
 short_desc: 按会话查看多个 new-api 实例的渠道、套餐余量和 token 流向
-version: 1.2.3
+version: 1.3.0
 author: team-s2
 repo: https://github.com/team-s2/astrbot_plugin_newapi

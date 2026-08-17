@@ -41,6 +41,7 @@ OTHER_LABELS: dict[FlowStage, str] = {
 
 MIN_IMAGE_WIDTH = 3600
 MIN_IMAGE_HEIGHT = 2240
+MAX_IMAGE_PIXELS = 64_000_000
 FONT_SIZE = 40
 HORIZONTAL_MARGIN = 80
 VERTICAL_MARGIN = 80
@@ -69,6 +70,9 @@ class RenderSummary:
     row_count: int
     node_count: int
     link_count: int
+    width: int
+    height: int
+    pixel_count: int
 
 
 def _number(value: Any) -> float:
@@ -322,6 +326,12 @@ def render_sankey(
         MIN_IMAGE_HEIGHT,
         ceil(2 * VERTICAL_MARGIN + max(label_area_height, node_area_height)),
     )
+    pixel_count = width * height
+    if pixel_count > MAX_IMAGE_PIXELS:
+        raise ValueError(
+            f"流图需要 {pixel_count:,} 像素，超过 {MAX_IMAGE_PIXELS:,} 像素的"
+            "安全限制；请减少 Top N 或当前实例的可见阶段"
+        )
 
     positions: list[dict[str, dict[str, Any]]] = []
     for index, totals in enumerate(node_totals):
@@ -406,9 +416,13 @@ def render_sankey(
             source_cursor[source] += source_height
             target_cursor[target] += target_height
 
+    node_count = sum(len(stage) for stage in positions)
+    link_count = len(links)
+    del prepared, stage_totals, top_ids, paths
+    del root_ids, root_colors, node_colors, link_totals, link_colors, node_totals
+
     image = Image.new("RGB", (width, height), "#ffffff")
-    overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
-    link_draw = ImageDraw.Draw(overlay)
+    link_draw = ImageDraw.Draw(image, "RGBA")
     for link in sorted(links, key=lambda item: item["value"], reverse=True):
         control = (link["x1"] - link["x0"]) * 0.48
         top: list[tuple[float, float]] = []
@@ -452,7 +466,6 @@ def render_sankey(
             top + list(reversed(bottom)),
             fill=(*rgb, round(link["alpha"] * 255)),
         )
-    image = Image.alpha_composite(image.convert("RGBA"), overlay).convert("RGB")
     draw = ImageDraw.Draw(image)
     label_top = VERTICAL_MARGIN + label_height / 2
     label_bottom = height - VERTICAL_MARGIN - label_height / 2
@@ -499,9 +512,12 @@ def render_sankey(
             )
 
     output.parent.mkdir(parents=True, exist_ok=True)
-    image.save(output, "PNG", optimize=True)
+    image.save(output, "PNG")
     return RenderSummary(
         row_count=len(rows),
-        node_count=sum(len(stage) for stage in positions),
-        link_count=len(links),
+        node_count=node_count,
+        link_count=link_count,
+        width=width,
+        height=height,
+        pixel_count=pixel_count,
     )

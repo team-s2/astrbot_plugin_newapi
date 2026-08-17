@@ -75,13 +75,14 @@ class NewApiInstance:
 
     name: str
     client: NewApiClient
+    flow_stages: tuple[FlowStage, ...]
 
 
 @star.register(
     "astrbot_plugin_newapi",
     "team-s2",
     "查询 new-api 渠道信息并绘制 Dashboard 流图",
-    "1.2.3",
+    "1.3.0",
 )
 class NewApiPlugin(star.Star):
     """Expose read-only new-api administration commands to AstrBot admins."""
@@ -97,6 +98,7 @@ class NewApiPlugin(star.Star):
         self.config = config
         self.instances: list[NewApiInstance] = []
         self.instances_by_umo: dict[str, NewApiInstance] = {}
+        self._flow_render_lock = asyncio.Lock()
         self._load_instances()
 
     async def terminate(self) -> None:
@@ -139,9 +141,28 @@ class NewApiPlugin(star.Star):
             if not isinstance(raw_umos, list):
                 raise ValueError(f"new-api 实例“{name}”的 UMO 必须是数组")
 
+            raw_stages = raw_instance.get(
+                "flow_stages", ["token", "model", "channel"]
+            )
+            if not isinstance(raw_stages, list):
+                raise ValueError(f"new-api 实例“{name}”的流图显示阶段必须是数组")
+            selected_stages = set(raw_stages)
+            unknown_stages = selected_stages.difference(FLOW_STAGE_ORDER)
+            if unknown_stages:
+                raise ValueError(
+                    f"new-api 实例“{name}”包含无效流图阶段："
+                    + "、".join(sorted(str(stage) for stage in unknown_stages))
+                )
+            flow_stages = tuple(
+                stage for stage in FLOW_STAGE_ORDER if stage in selected_stages
+            )
+            if len(flow_stages) < 2:
+                raise ValueError(f"new-api 实例“{name}”的流图至少需要选择两个阶段")
+
             instance = NewApiInstance(
                 name=name,
                 client=NewApiClient(base_url, access_token, user_id, timeout),
+                flow_stages=flow_stages,
             )
             self.instances.append(instance)
             for raw_umo in raw_umos:
@@ -341,13 +362,6 @@ class NewApiPlugin(star.Star):
         output: Path | None = None
         try:
             instance = self._instance_for(event)
-            raw_stages = self.config.get("flow_stages", ["token", "model", "channel"])
-            selected_stages = set(raw_stages)
-            stages = [
-                stage for stage in FLOW_STAGE_ORDER if stage in selected_stages
-            ]
-            if len(stages) < 2:
-                raise NewApiError("流图配置至少需要选择两个阶段")
             range_seconds = (
                 parse_flow_duration(duration)
                 if duration
@@ -367,21 +381,26 @@ class NewApiPlugin(star.Star):
                 raise NewApiError("所选时间范围内没有流图数据")
 
             output = Path(get_astrbot_temp_path()) / f"newapi-flow-{uuid4().hex}.png"
+            event.track_temporary_local_file(str(output))
             font_value = str(self.config.get("font_path", "")).strip()
-            summary = await asyncio.to_thread(
-                render_sankey,
-                rows,
-                output,
-                stages,
-                max(1, min(int(self.config.get("flow_top_n", 20)), 100)),
-                cast(
-                    OverflowMode,
-                    self.config.get("flow_overflow", "aggregate"),
-                ),
-                Path(font_value) if font_value else None,
-            )
+            async with self._flow_render_lock:
+                summary = await asyncio.to_thread(
+                    render_sankey,
+                    rows,
+                    output,
+                    list(instance.flow_stages),
+                    max(1, min(int(self.config.get("flow_top_n", 20)), 100)),
+                    cast(
+                        OverflowMode,
+                        self.config.get("flow_overflow", "aggregate"),
+                    ),
+                    Path(font_value) if font_value else None,
+                )
             logger.info(
-                "Rendered new-api flow with %d nodes and %d links",
+                "Rendered new-api flow at %dx%d (%d pixels) with %d nodes and %d links",
+                summary.width,
+                summary.height,
+                summary.pixel_count,
                 summary.node_count,
                 summary.link_count,
             )
