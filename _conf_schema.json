@@ -31,7 +31,7 @@
   "flow_hours": {
     "description": "流图时间范围（小时）",
     "type": "int",
-    "hint": "最大 720 小时（30 天）。",
+    "hint": "未在 flow 命令中指定时间范围时使用，最大 720 小时（30 天）。",
     "default": 24
   },
   "flow_stages": {

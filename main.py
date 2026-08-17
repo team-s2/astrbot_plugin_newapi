@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from pathlib import Path
 from typing import Any, cast
@@ -40,13 +41,26 @@ CHANNEL_TYPES = {
     58: "Advanced Custom",
 }
 CHANNEL_STATUSES = {0: "未知", 1: "启用", 2: "手动禁用", 3: "自动禁用"}
+FLOW_DURATION_UNITS = {"m": 60, "h": 3600, "d": 86400}
+MAX_FLOW_DURATION = 30 * 86400
+
+
+def parse_flow_duration(value: str) -> int:
+    """Convert a compact duration such as ``30m``, ``1h`` or ``7d`` to seconds."""
+    match = re.fullmatch(r"([1-9]\d*)([mhd])", value.strip(), re.IGNORECASE)
+    if not match:
+        raise NewApiError("时间范围格式错误，请使用 30m、1h 或 7d 等格式")
+    seconds = int(match.group(1)) * FLOW_DURATION_UNITS[match.group(2).lower()]
+    if seconds > MAX_FLOW_DURATION:
+        raise NewApiError("统计时间范围不能超过 30 天")
+    return seconds
 
 
 @star.register(
     "astrbot_plugin_newapi",
     "team-s2",
     "查询 new-api 渠道信息并绘制 Dashboard 流图",
-    "1.0.0",
+    "1.1.0",
 )
 class NewApiPlugin(star.Star):
     """Expose read-only new-api administration commands to AstrBot admins."""
@@ -214,11 +228,12 @@ class NewApiPlugin(star.Star):
             yield event.plain_result(f"查询 new-api 失败：{error}")
 
     @newapi.command("flow")
-    async def flow(self, event: AstrMessageEvent):
+    async def flow(self, event: AstrMessageEvent, duration: str = ""):
         """Render and send the configured new-api Dashboard flow.
 
         Args:
             event: Incoming AstrBot message event.
+            duration: Optional compact duration; empty uses configuration.
         """
         output: Path | None = None
         try:
@@ -229,9 +244,19 @@ class NewApiPlugin(star.Star):
             ]
             if len(stages) < 2:
                 raise NewApiError("流图配置至少需要选择两个阶段")
-            hours = max(1, min(int(self.config.get("flow_hours", 24)), 24 * 30))
+            range_seconds = (
+                parse_flow_duration(duration)
+                if duration
+                else max(
+                    3600,
+                    min(
+                        int(self.config.get("flow_hours", 24)) * 3600,
+                        MAX_FLOW_DURATION,
+                    ),
+                )
+            )
             end_timestamp = int(time.time())
-            rows = await self.client.flow(end_timestamp - hours * 3600, end_timestamp)
+            rows = await self.client.flow(end_timestamp - range_seconds, end_timestamp)
             if not rows:
                 raise NewApiError("所选时间范围内没有流图数据")
 

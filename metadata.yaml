@@ -1,5 +1,7 @@
 name: astrbot_plugin_newapi
-description: 查询 new-api 渠道信息并绘制 Dashboard 流图
-version: 1.0.0
+display_name: new-api 管理
+desc: 查询 new-api 渠道、订阅套餐余量并绘制 Dashboard Flow
+short_desc: 在 AstrBot 中查看 new-api 渠道、套餐余量和 token 流向
+version: 1.1.0
 author: team-s2
 repo: https://github.com/team-s2/astrbot_plugin_newapi
