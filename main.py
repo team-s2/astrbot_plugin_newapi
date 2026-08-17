@@ -81,7 +81,7 @@ class NewApiInstance:
     "astrbot_plugin_newapi",
     "team-s2",
     "查询 new-api 渠道信息并绘制 Dashboard 流图",
-    "1.2.2",
+    "1.2.3",
 )
 class NewApiPlugin(star.Star):
     """Expose read-only new-api administration commands to AstrBot admins."""
@@ -378,8 +378,6 @@ class NewApiPlugin(star.Star):
                     OverflowMode,
                     self.config.get("flow_overflow", "aggregate"),
                 ),
-                3600,
-                2240,
                 Path(font_value) if font_value else None,
             )
             logger.info(

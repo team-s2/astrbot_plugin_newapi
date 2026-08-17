@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
+from math import ceil
 from pathlib import Path
 from typing import Any, Literal
 
@@ -37,6 +38,19 @@ OTHER_LABELS: dict[FlowStage, str] = {
     "model": "Other models",
     "channel": "Other channels",
 }
+
+MIN_IMAGE_WIDTH = 3600
+MIN_IMAGE_HEIGHT = 2240
+FONT_SIZE = 40
+HORIZONTAL_MARGIN = 80
+VERTICAL_MARGIN = 80
+NODE_WIDTH = 56
+NODE_GAP = 14
+MIN_NODE_HEIGHT = 8
+LABEL_PADDING = 8
+COLUMN_GAP = 120
+LABEL_LINE_GAP = 56
+PROPORTIONAL_FLOW_HEIGHT = 1120
 
 
 @dataclass(frozen=True)
@@ -175,8 +189,6 @@ def render_sankey(
     stages: list[FlowStage],
     top_limit: int = 20,
     overflow_mode: OverflowMode = "aggregate",
-    width: int = 1800,
-    height: int = 1120,
     font_path: Path | None = None,
 ) -> RenderSummary:
     """Render new-api flow data in the visual style of its VChart Sankey.
@@ -187,8 +199,6 @@ def render_sankey(
         stages: Ordered stages to display; at least two are required.
         top_limit: Maximum named nodes retained in each stage.
         overflow_mode: Aggregate overflow nodes or hide their entire paths.
-        width: Output width in pixels.
-        height: Output height in pixels.
         font_path: Optional custom font with CJK support.
 
     Returns:
@@ -266,37 +276,68 @@ def render_sankey(
             link_totals[index][key] += value
             link_colors[index].setdefault(key, color)
 
-    margin = max(round(height * 0.025), 16)
-    node_width = max(round(width * 0.0155), 14)
-    node_gap = 14
-    min_node_height = 8
-    font = _load_font(max(round(height * 0.018), 14), font_path)
-    last_stage_label_width = max(
-        (
-            font.getlength(_node_label(node_info[node_id], value))
-            for node_id, value in node_totals[-1].items()
-        ),
-        default=0,
-    )
-    right_margin = margin + 4 + last_stage_label_width
-    node_x = [
-        margin
-        + (width - margin - right_margin - node_width)
-        * index
-        / (len(stages) - 1)
-        for index in range(len(stages))
+    font = _load_font(FONT_SIZE, font_path)
+    label_bbox = font.getbbox("Ag国pq")
+    label_height = label_bbox[3] - label_bbox[1]
+    label_line_gap = max(LABEL_LINE_GAP, label_height + 8)
+    stage_label_widths = [
+        max(
+            (
+                font.getlength(_node_label(node_info[node_id], value))
+                for node_id, value in totals.items()
+            ),
+            default=0,
+        )
+        for totals in node_totals
     ]
+
+    natural_width = (
+        2 * HORIZONTAL_MARGIN
+        + len(stages) * (NODE_WIDTH + LABEL_PADDING)
+        + sum(stage_label_widths)
+        + (len(stages) - 1) * COLUMN_GAP
+    )
+    width = max(MIN_IMAGE_WIDTH, ceil(natural_width))
+    extra_column_gap = (width - natural_width) / (len(stages) - 1)
+    node_x = [float(HORIZONTAL_MARGIN)]
+    for label_width in stage_label_widths[:-1]:
+        node_x.append(
+            node_x[-1]
+            + NODE_WIDTH
+            + LABEL_PADDING
+            + label_width
+            + COLUMN_GAP
+            + extra_column_gap
+        )
+
+    max_stage_nodes = max(len(totals) for totals in node_totals)
+    min_node_height = max(MIN_NODE_HEIGHT, label_line_gap - NODE_GAP)
+    label_area_height = label_height + label_line_gap * (max_stage_nodes - 1)
+    node_area_height = (
+        min_node_height * max_stage_nodes
+        + NODE_GAP * (max_stage_nodes - 1)
+        + PROPORTIONAL_FLOW_HEIGHT
+    )
+    height = max(
+        MIN_IMAGE_HEIGHT,
+        ceil(2 * VERTICAL_MARGIN + max(label_area_height, node_area_height)),
+    )
+
     positions: list[dict[str, dict[str, Any]]] = []
     for index, totals in enumerate(node_totals):
         ordered = sorted(
             totals,
             key=lambda node_id: (-totals[node_id], node_info[node_id].label),
         )
-        available = height - 2 * margin - node_gap * max(len(ordered) - 1, 0)
+        available = (
+            height
+            - 2 * VERTICAL_MARGIN
+            - NODE_GAP * max(len(ordered) - 1, 0)
+        )
         baseline = min(min_node_height, available / max(len(ordered), 1))
         flexible = max(available - baseline * len(ordered), 0)
         total = sum(totals.values()) or 1
-        cursor = float(margin)
+        cursor = float(VERTICAL_MARGIN)
         stage_positions: dict[str, dict[str, Any]] = {}
         for node_id in ordered:
             node_height = baseline + flexible * totals[node_id] / total
@@ -307,7 +348,7 @@ def render_sankey(
                 "value": totals[node_id],
                 "color": node_colors[node_id],
             }
-            cursor += node_height + node_gap
+            cursor += node_height + NODE_GAP
         positions.append(stage_positions)
 
     links: list[dict[str, Any]] = []
@@ -351,7 +392,7 @@ def render_sankey(
             key = (source, target)
             links.append(
                 {
-                    "x0": source_node["x"] + node_width,
+                    "x0": source_node["x"] + NODE_WIDTH,
                     "x1": target_node["x"],
                     "sy0": source_cursor[source],
                     "sy1": source_cursor[source] + source_height,
@@ -413,7 +454,8 @@ def render_sankey(
         )
     image = Image.alpha_composite(image.convert("RGBA"), overlay).convert("RGB")
     draw = ImageDraw.Draw(image)
-    min_label_gap = max(round(height * 0.024), 22)
+    label_top = VERTICAL_MARGIN + label_height / 2
+    label_bottom = height - VERTICAL_MARGIN - label_height / 2
 
     for stage, stage_positions in enumerate(positions):
         ordered_nodes = sorted(stage_positions.items(), key=lambda item: item[1]["y0"])
@@ -423,17 +465,17 @@ def render_sankey(
             label_centers.append(
                 max(
                     desired,
-                    label_centers[-1] + min_label_gap
+                    label_centers[-1] + label_line_gap
                     if label_centers
-                    else margin + min_label_gap / 2,
+                    else label_top,
                 )
             )
-        if label_centers and label_centers[-1] > height - margin:
-            label_centers[-1] = height - margin
+        if label_centers and label_centers[-1] > label_bottom:
+            label_centers[-1] = label_bottom
             for index in range(len(label_centers) - 2, -1, -1):
                 label_centers[index] = min(
                     label_centers[index],
-                    label_centers[index + 1] - min_label_gap,
+                    label_centers[index + 1] - label_line_gap,
                 )
 
         for (node_id, node), label_center in zip(
@@ -441,12 +483,12 @@ def render_sankey(
         ):
             x = node["x"]
             draw.rectangle(
-                (x, node["y0"], x + node_width, node["y1"]),
+                (x, node["y0"], x + NODE_WIDTH, node["y1"]),
                 fill=node["color"],
                 outline="#b7c0cc",
                 width=1,
             )
-            label_x = x + node_width + 4
+            label_x = x + NODE_WIDTH + LABEL_PADDING
             label = _node_label(node_info[node_id], node["value"])
             draw.text(
                 (label_x, label_center),
