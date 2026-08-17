@@ -1,13 +1,13 @@
 # astrbot_plugin_newapi
 
-用于在 AstrBot 中只读查询 [new-api](https://github.com/QuantumNous/new-api) 管理信息的插件。支持查看渠道、查询 Codex 订阅用量与可用重置次数，以及将 Dashboard Flow 绘制成适合聊天发送的浅色 Sankey 图。
+用于在 AstrBot 中只读查询 [new-api](https://github.com/QuantumNous/new-api) 管理信息的插件。支持查看渠道、查询 Codex 与智谱 Coding Plan 订阅用量，以及将 Dashboard Flow 绘制成适合聊天发送的浅色 Sankey 图。
 
 ## 命令
 
 命令仅限 AstrBot 管理员使用：
 
-- `/newapi channel`：以表格形式列出所有渠道
-- `/newapi channel <渠道名称或 ID>`：查看渠道详情；Codex 渠道会同时查询订阅限额和重置次数
+- `/newapi channel`：列出所有渠道；订阅渠道会同时查询 Account Info
+- `/newapi channel <渠道名称或 ID>`：查看渠道详情和可用的 Account Info
 - `/newapi flow`：按后台配置生成流图并发送图片
 
 插件不会修改渠道、消费重置次数或执行其他写操作。
@@ -18,7 +18,7 @@
 
 1. 在 new-api 的个人设置中创建 Access Token。
 2. 填写 new-api 实例地址、Access Token 及其所属用户 ID。
-3. 选择 Flow 的时间范围、可见阶段、宽度指标、Top N 和溢出处理方式。
+3. 选择 Flow 的时间范围、可见阶段、Top N 和溢出处理方式。
 
 插件使用以下请求头访问 new-api：
 
@@ -35,7 +35,9 @@ New-Api-User: <user_id>
 
 `user → node → token → group → model → channel`
 
-默认只显示 `token → model → channel`，以 `quota` 决定流宽，每阶段保留 Top 20，其余数据合并为 Other。也可以改用 `tokens` 或 `requests`，并选择直接隐藏 Top N 以外路径。
+默认只显示 `token → model → channel`，以 API 返回的实际 `token_used` 决定流宽并在节点标签中显示 token 数。每阶段保留 Top 20，其余数据合并为 Other；也可以选择直接隐藏 Top N 以外路径。
+
+渠道列表中的“计费额度”来自 new-api 的 `used_quota`，并使用 `/api/status` 返回的 `quota_per_unit` 将渠道 USD 余额换算为相同单位。它是 new-api 的内部计费额度，不等同于 Flow 中的实际请求 token 数。
 
 绘图依赖 Pillow。插件会依次寻找 Noto Sans CJK、微软雅黑、苹方和 DejaVu Sans；为了正确显示中文，推荐在自定义 AstrBot 镜像中安装 Noto CJK 字体，例如 Debian/Ubuntu 镜像中的 `fonts-noto-cjk`。也可以通过 `font_path` 指向镜像内的 TTF/TTC 字体文件。
 
@@ -43,4 +45,4 @@ New-Api-User: <user_id>
 
 - Python 3.10+
 - 支持插件依赖自动安装的 AstrBot 版本
-- 需要包含 Dashboard Flow API 和 Codex usage API 的 team-s2/new-api 版本
+- 需要包含 Dashboard Flow、Codex usage 和智谱 Coding Plan usage API 的 team-s2/new-api 版本

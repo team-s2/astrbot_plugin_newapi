@@ -9,7 +9,8 @@ from typing import Any, Literal
 
 from PIL import Image, ImageDraw, ImageFont
 
-FlowMetric = Literal["quota", "tokens", "requests"]
+from .account_info import compact_token_count
+
 FlowStage = Literal["user", "node", "token", "group", "model", "channel"]
 OverflowMode = Literal["aggregate", "hide"]
 
@@ -45,36 +46,6 @@ class FlowNode:
     id: str
     label: str
     kind: FlowStage
-
-
-@dataclass
-class FlowMetrics:
-    """Metrics accumulated for a flow path."""
-
-    quota: float = 0
-    tokens: float = 0
-    requests: float = 0
-
-    def add(self, other: FlowMetrics) -> None:
-        """Add another metric set in place.
-
-        Args:
-            other: Metrics to add.
-        """
-        self.quota += other.quota
-        self.tokens += other.tokens
-        self.requests += other.requests
-
-    def value(self, metric: FlowMetric) -> float:
-        """Return the configured width metric.
-
-        Args:
-            metric: Metric used to size Sankey nodes and links.
-
-        Returns:
-            Non-negative metric value.
-        """
-        return max(float(getattr(self, metric)), 0)
 
 
 @dataclass(frozen=True)
@@ -197,7 +168,6 @@ def render_sankey(
     rows: list[dict[str, Any]],
     output: Path,
     stages: list[FlowStage],
-    metric: FlowMetric = "quota",
     top_limit: int = 20,
     overflow_mode: OverflowMode = "aggregate",
     width: int = 1800,
@@ -210,7 +180,6 @@ def render_sankey(
         rows: Flow rows returned by ``/api/data/flow``.
         output: Destination PNG path.
         stages: Ordered stages to display; at least two are required.
-        metric: Width metric: quota, tokens, or requests.
         top_limit: Maximum named nodes retained in each stage.
         overflow_mode: Aggregate overflow nodes or hide their entire paths.
         width: Output width in pixels.
@@ -225,24 +194,17 @@ def render_sankey(
     """
     if len(stages) < 2:
         raise ValueError("at least two flow stages must be visible")
-    if metric not in ("quota", "tokens", "requests"):
-        raise ValueError(f"unsupported flow metric: {metric}")
     if overflow_mode not in ("aggregate", "hide"):
         raise ValueError(f"unsupported overflow mode: {overflow_mode}")
 
-    prepared: list[tuple[list[FlowNode], FlowMetrics]] = []
+    prepared: list[tuple[list[FlowNode], float]] = []
     stage_totals: list[defaultdict[str, float]] = [defaultdict(float) for _ in stages]
     for row in rows:
-        metrics = FlowMetrics(
-            quota=_number(row.get("quota")),
-            tokens=_number(row.get("token_used")),
-            requests=_number(row.get("count")),
-        )
-        value = metrics.value(metric)
+        value = _number(row.get("token_used"))
         if value <= 0:
             continue
         path = [_row_node(row, stage) for stage in stages]
-        prepared.append((path, metrics))
+        prepared.append((path, value))
         for index, node in enumerate(path):
             stage_totals[index][node.id] += value
 
@@ -252,8 +214,8 @@ def render_sankey(
         top_ids.append(set(ordered[:top_limit]))
 
     node_info: dict[str, FlowNode] = {}
-    paths: dict[tuple[str, ...], FlowMetrics] = {}
-    for path, metrics in prepared:
+    paths: dict[tuple[str, ...], float] = {}
+    for path, value in prepared:
         has_overflow = any(
             node.id not in top_ids[index] for index, node in enumerate(path)
         )
@@ -272,9 +234,7 @@ def render_sankey(
                     )
                 )
         ids = tuple(node.id for node in normalized)
-        if ids not in paths:
-            paths[ids] = FlowMetrics()
-        paths[ids].add(metrics)
+        paths[ids] = paths.get(ids, 0) + value
         for node in normalized:
             node_info[node.id] = node
 
@@ -291,8 +251,7 @@ def render_sankey(
         defaultdict(float) for _ in range(len(stages) - 1)
     ]
     link_colors: list[dict[tuple[str, str], str]] = [{} for _ in range(len(stages) - 1)]
-    for path, metrics in paths.items():
-        value = metrics.value(metric)
+    for path, value in paths.items():
         color = root_colors[path[0]]
         for index, node_id in enumerate(path):
             node_totals[index][node_id] += value
@@ -473,9 +432,13 @@ def render_sankey(
             )
             is_last = stage == len(stages) - 1
             label_x = x - 5 if is_last else x + node_width + 4
+            label = (
+                f"{_truncate(node_info[node_id].label, 22)}"
+                f" · {compact_token_count(node['value'])}"
+            )
             draw.text(
                 (label_x, label_center),
-                _truncate(node_info[node_id].label, 28),
+                label,
                 font=font,
                 fill="#374151",
                 anchor="rm" if is_last else "lm",

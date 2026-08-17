@@ -102,6 +102,19 @@ class NewApiClient:
             raise NewApiError("new-api returned an invalid channel list")
         return data["items"], int(data.get("total", len(data["items"])))
 
+    async def quota_per_unit(self) -> float:
+        """Return the number of quota units configured for one USD."""
+        data = await self.get("/api/status")
+        if not isinstance(data, dict):
+            raise NewApiError("new-api returned invalid system status data")
+        try:
+            value = float(data.get("quota_per_unit"))
+        except (TypeError, ValueError) as error:
+            raise NewApiError("new-api returned an invalid quota_per_unit") from error
+        if value <= 0:
+            raise NewApiError("new-api returned a non-positive quota_per_unit")
+        return value
+
     async def find_channel(self, query: str) -> dict:
         """Resolve a channel ID or an exact channel name.
 
@@ -172,6 +185,13 @@ class NewApiClient:
         data = await self.get(f"/api/channel/{channel_id}/codex/usage/reset-credits")
         if not isinstance(data, dict):
             raise NewApiError("new-api returned invalid reset-credit data")
+        return data
+
+    async def zhipu_coding_plan_usage(self, channel_id: int) -> dict:
+        """Fetch Zhipu Coding Plan subscription usage for a channel."""
+        data = await self.get(f"/api/channel/{channel_id}/zhipu/coding-plan/usage")
+        if not isinstance(data, dict):
+            raise NewApiError("new-api returned invalid Zhipu Coding Plan usage data")
         return data
 
     async def flow(self, start_timestamp: int, end_timestamp: int) -> list[dict]:

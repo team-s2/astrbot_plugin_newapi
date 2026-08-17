@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import time
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 from uuid import uuid4
 
 from astrbot.api import AstrBotConfig, logger, star
@@ -14,8 +13,13 @@ from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.core.star.filter.command import GreedyStr
 from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
 
+from .account_info import (
+    format_codex_account,
+    format_token_count,
+    format_zhipu_account,
+)
 from .client import NewApiClient, NewApiError
-from .flow_renderer import FlowMetric, FlowStage, OverflowMode, render_sankey
+from .flow_renderer import FlowStage, OverflowMode, render_sankey
 
 CHANNEL_TYPES = {
     1: "OpenAI",
@@ -26,6 +30,7 @@ CHANNEL_TYPES = {
     17: "Ali",
     20: "OpenRouter",
     24: "Gemini",
+    26: "Zhipu V4",
     33: "AWS",
     40: "SiliconFlow",
     41: "Vertex AI",
@@ -92,25 +97,55 @@ class NewApiPlugin(star.Star):
     async def _list_channels(self, event: AstrMessageEvent):
         """List all channels with usage information in a list format."""
         try:
-            channels, total = await self.client.list_channels()
+            channels_result, quota_per_unit_result = await asyncio.gather(
+                self.client.list_channels(),
+                self.client.quota_per_unit(),
+                return_exceptions=True,
+            )
+            if isinstance(channels_result, Exception):
+                raise channels_result
+            channels, total = channels_result
+            quota_per_unit = (
+                quota_per_unit_result
+                if isinstance(quota_per_unit_result, float)
+                else None
+            )
+            if isinstance(quota_per_unit_result, Exception):
+                logger.warning(
+                    "Failed to query new-api quota_per_unit: %s",
+                    quota_per_unit_result,
+                )
             limit = max(1, min(int(self.config.get("channel_list_limit", 30)), 100))
             shown = channels[:limit]
 
+            account_channels = [ch for ch in shown if self._account_info_kind(ch)]
+            account_results = await asyncio.gather(
+                *(self._fetch_account_info(ch) for ch in account_channels)
+            )
+            account_info = {
+                int(ch.get("id") or 0): result
+                for ch, result in zip(account_channels, account_results, strict=True)
+            }
+
             lines = [f"new-api 渠道（显示 {len(shown)}/{total}）", ""]
             for ch in shown:
-                ch_type = int(ch.get("type", 0))
-                type_name = CHANNEL_TYPES.get(ch_type, f"类型 {ch_type}")
+                type_name = self._channel_type_name(ch)
                 status = CHANNEL_STATUSES.get(int(ch.get("status", 0)), "未知")
                 name = str(ch.get("name") or "未命名")
                 group = str(ch.get("group") or "default")
-                balance = float(ch.get("balance") or 0)
-                used_quota = float(ch.get("used_quota") or 0)
+                used_quota = ch.get("used_quota") or 0
 
                 lines.append(f"#{ch.get('id')} {name}")
-                lines.append(
-                    f"  {type_name} · {status} · {group}"
-                )
-                lines.append(f"  余额 ${balance:.4f} · 已用 ${used_quota:.4f}")
+                lines.append(f"  {type_name} · {status} · {group}")
+                quota_line = f"  计费额度：已用 {format_token_count(used_quota)}"
+                if quota_per_unit is not None:
+                    balance_quota = float(ch.get("balance") or 0) * quota_per_unit
+                    quota_line += f" · 余额 {format_token_count(balance_quota)}"
+                lines.append(quota_line)
+                result = account_info.get(int(ch.get("id") or 0))
+                if result is not None:
+                    info_lines = self._account_info_lines(result)
+                    lines.extend(f"  {line}" for line in info_lines)
                 if ch is not shown[-1]:
                     lines.append("")
             if total > limit:
@@ -122,7 +157,7 @@ class NewApiPlugin(star.Star):
             yield event.plain_result(f"查询 new-api 失败：{error}")
 
     async def _show_channel(self, event: AstrMessageEvent, query: str):
-        """Show one channel and Codex subscription usage when available."""
+        """Show one channel and subscription Account Info when available."""
         try:
             found = await self.client.find_channel(query)
             channel_id = int(found.get("id", 0))
@@ -132,22 +167,36 @@ class NewApiPlugin(star.Star):
             if not isinstance(found, dict):
                 raise NewApiError(f"未找到渠道：{query}")
 
-            channel_type = int(found.get("type", 0))
+            quota_per_unit_result, account_info = await asyncio.gather(
+                self.client.quota_per_unit(),
+                self._fetch_account_info(found, include_credits=True),
+                return_exceptions=True,
+            )
             status = int(found.get("status", 0))
             models = [
                 item for item in str(found.get("models") or "").split(",") if item
             ]
             lines = [
                 f"渠道 #{channel_id} · {found.get('name') or '未命名'}",
-                f"类型：{CHANNEL_TYPES.get(channel_type, f'类型 {channel_type}')}",
+                f"类型：{self._channel_type_name(found)}",
                 f"状态：{CHANNEL_STATUSES.get(status, '未知')}",
                 f"分组：{found.get('group') or 'default'}",
                 f"模型：{len(models)} 个"
                 + (f"（{', '.join(models[:8])}）" if models else ""),
-                f"余额：${float(found.get('balance') or 0):.4f}",
-                f"已用：${float(found.get('used_quota') or 0):.4f}",
-                f"响应时间：{int(found.get('response_time') or 0)} ms",
+                f"已用计费额度：{format_token_count(found.get('used_quota'))}",
             ]
+            if isinstance(quota_per_unit_result, float):
+                balance_quota = (
+                    float(found.get("balance") or 0) * quota_per_unit_result
+                )
+                balance_text = format_token_count(balance_quota)
+                lines.append(f"剩余计费额度：{balance_text}")
+            elif isinstance(quota_per_unit_result, Exception):
+                logger.warning(
+                    "Failed to query new-api quota_per_unit: %s",
+                    quota_per_unit_result,
+                )
+            lines.append(f"响应时间：{int(found.get('response_time') or 0)} ms")
             if found.get("base_url"):
                 lines.append(f"Base URL：{found['base_url']}")
             if found.get("tag"):
@@ -155,55 +204,10 @@ class NewApiPlugin(star.Star):
             if found.get("remark"):
                 lines.append(f"备注：{found['remark']}")
 
-            if channel_type == 57:
-                usage_result, credits_result = await asyncio.gather(
-                    self.client.codex_usage(channel_id),
-                    self.client.codex_reset_credits(channel_id),
-                    return_exceptions=True,
-                )
+            if not isinstance(account_info, Exception) and account_info is not None:
                 lines.append("")
-                lines.append("Codex 用量")
-                if isinstance(usage_result, Exception):
-                    lines.append(f"用量查询失败：{usage_result}")
-                else:
-                    rate_limit = usage_result.get("rate_limit") or {}
-                    lines.append(f"账户：{usage_result.get('email') or '未知'}")
-                    lines.append(
-                        f"套餐：{usage_result.get('plan_type') or rate_limit.get('plan_type') or '未知'}"
-                    )
-                    lines.append(
-                        "状态："
-                        + (
-                            "可用"
-                            if rate_limit.get("allowed")
-                            and not rate_limit.get("limit_reached")
-                            else "受限"
-                        )
-                    )
-                    for label, key in (
-                        ("主窗口", "primary_window"),
-                        ("次窗口", "secondary_window"),
-                    ):
-                        window = rate_limit.get(key)
-                        if not isinstance(window, dict):
-                            continue
-                        reset_at = window.get("reset_at")
-                        reset_text = "未知"
-                        if isinstance(reset_at, (int, float)) and reset_at > 0:
-                            reset_text = datetime.fromtimestamp(
-                                reset_at, timezone.utc
-                            ).strftime("%Y-%m-%d %H:%M UTC")
-                        lines.append(
-                            f"{label}：已用 {float(window.get('used_percent') or 0):.1f}%"
-                            f"，重置 {reset_text}"
-                        )
-                if isinstance(credits_result, Exception):
-                    lines.append(f"重置次数查询失败：{credits_result}")
-                else:
-                    lines.append(
-                        f"可用重置次数：{int(credits_result.get('available_count') or 0)}"
-                        f" / 累计 {int(credits_result.get('total_earned_count') or 0)}"
-                    )
+                lines.append("Account Info")
+                lines.extend(self._account_info_lines(account_info))
             yield event.plain_result("\n".join(lines))
         except NewApiError as error:
             logger.warning("Failed to show new-api channel: %s", error)
@@ -238,7 +242,6 @@ class NewApiPlugin(star.Star):
                 rows,
                 output,
                 stages,
-                cast(FlowMetric, self.config.get("flow_metric", "quota")),
                 max(1, min(int(self.config.get("flow_top_n", 20)), 100)),
                 cast(
                     OverflowMode,
@@ -257,3 +260,67 @@ class NewApiPlugin(star.Star):
         except (NewApiError, ValueError, OSError) as error:
             logger.warning("Failed to render new-api flow: %s", error)
             yield event.plain_result(f"生成 new-api 流图失败：{error}")
+
+    @staticmethod
+    def _account_info_kind(channel: dict[str, Any]) -> str | None:
+        channel_type = int(channel.get("type") or 0)
+        if channel_type == 57:
+            return "codex"
+        base_url = str(channel.get("base_url") or "").strip()
+        if channel_type == 26 and base_url == "glm-coding-plan":
+            return "zhipu"
+        return None
+
+    @classmethod
+    def _channel_type_name(cls, channel: dict[str, Any]) -> str:
+        if cls._account_info_kind(channel) == "zhipu":
+            return "Zhipu Coding Plan"
+        channel_type = int(channel.get("type") or 0)
+        return CHANNEL_TYPES.get(channel_type, f"类型 {channel_type}")
+
+    async def _fetch_account_info(
+        self, channel: dict[str, Any], include_credits: bool = False
+    ) -> tuple[str, object, object | None] | None:
+        channel_id = int(channel.get("id") or 0)
+        kind = self._account_info_kind(channel)
+        if kind == "codex":
+            if include_credits:
+                usage, credits = await asyncio.gather(
+                    self.client.codex_usage(channel_id),
+                    self.client.codex_reset_credits(channel_id),
+                    return_exceptions=True,
+                )
+            else:
+                try:
+                    usage = await self.client.codex_usage(channel_id)
+                except NewApiError as error:
+                    usage = error
+                credits = None
+            return kind, usage, credits
+        if kind == "zhipu":
+            try:
+                usage = await self.client.zhipu_coding_plan_usage(channel_id)
+            except NewApiError as error:
+                usage = error
+            return kind, usage, None
+        return None
+
+    @staticmethod
+    def _account_info_lines(
+        result: tuple[str, object, object | None] | None,
+    ) -> list[str]:
+        if result is None:
+            return []
+        kind, usage, credits = result
+        if isinstance(usage, Exception):
+            return [f"Account Info 查询失败：{usage}"]
+        if not isinstance(usage, dict):
+            return ["Account Info 查询失败：new-api 返回了无效数据"]
+        if kind == "zhipu":
+            return format_zhipu_account(usage)
+
+        credit_data = credits if isinstance(credits, dict) else None
+        lines = format_codex_account(usage, credit_data)
+        if isinstance(credits, Exception):
+            lines.append(f"重置次数查询失败：{credits}")
+        return lines

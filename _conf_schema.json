@@ -41,12 +41,6 @@
     "hint": "按此顺序绘制，至少选择两个阶段。",
     "default": ["token", "model", "channel"]
   },
-  "flow_metric": {
-    "description": "流图宽度指标",
-    "type": "string",
-    "options": ["quota", "tokens", "requests"],
-    "default": "quota"
-  },
   "flow_top_n": {
     "description": "每阶段保留的 Top N",
     "type": "int",
