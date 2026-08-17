@@ -81,7 +81,7 @@ class NewApiInstance:
     "astrbot_plugin_newapi",
     "team-s2",
     "查询 new-api 渠道信息并绘制 Dashboard 流图",
-    "1.2.1",
+    "1.2.2",
 )
 class NewApiPlugin(star.Star):
     """Expose read-only new-api administration commands to AstrBot admins."""

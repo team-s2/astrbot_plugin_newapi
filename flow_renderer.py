@@ -146,6 +146,11 @@ def _truncate(text: str, limit: int) -> str:
     return text if len(text) <= limit else f"{text[: limit - 1]}…"
 
 
+def _node_label(node: FlowNode, value: float) -> str:
+    """Format the text drawn beside a Sankey node."""
+    return f"{_truncate(node.label, 22)} · {compact_token_count(value)}"
+
+
 def _bezier(a: float, b: float, c: float, d: float, t: float) -> float:
     """Evaluate one coordinate of a cubic Bézier curve.
 
@@ -265,8 +270,20 @@ def render_sankey(
     node_width = max(round(width * 0.0155), 14)
     node_gap = 14
     min_node_height = 8
+    font = _load_font(max(round(height * 0.018), 14), font_path)
+    last_stage_label_width = max(
+        (
+            font.getlength(_node_label(node_info[node_id], value))
+            for node_id, value in node_totals[-1].items()
+        ),
+        default=0,
+    )
+    right_margin = margin + 4 + last_stage_label_width
     node_x = [
-        margin + (width - 2 * margin - node_width) * index / (len(stages) - 1)
+        margin
+        + (width - margin - right_margin - node_width)
+        * index
+        / (len(stages) - 1)
         for index in range(len(stages))
     ]
     positions: list[dict[str, dict[str, Any]]] = []
@@ -396,7 +413,6 @@ def render_sankey(
         )
     image = Image.alpha_composite(image.convert("RGBA"), overlay).convert("RGB")
     draw = ImageDraw.Draw(image)
-    font = _load_font(max(round(height * 0.018), 14), font_path)
     min_label_gap = max(round(height * 0.024), 22)
 
     for stage, stage_positions in enumerate(positions):
@@ -430,18 +446,14 @@ def render_sankey(
                 outline="#b7c0cc",
                 width=1,
             )
-            is_last = stage == len(stages) - 1
-            label_x = x - 5 if is_last else x + node_width + 4
-            label = (
-                f"{_truncate(node_info[node_id].label, 22)}"
-                f" · {compact_token_count(node['value'])}"
-            )
+            label_x = x + node_width + 4
+            label = _node_label(node_info[node_id], node["value"])
             draw.text(
                 (label_x, label_center),
                 label,
                 font=font,
                 fill="#374151",
-                anchor="rm" if is_last else "lm",
+                anchor="lm",
             )
 
     output.parent.mkdir(parents=True, exist_ok=True)
