@@ -44,6 +44,14 @@ CHANNEL_TYPES = {
 CHANNEL_STATUSES = {0: "未知", 1: "启用", 2: "手动禁用", 3: "自动禁用"}
 FLOW_DURATION_UNITS = {"m": 60, "h": 3600, "d": 86400}
 MAX_FLOW_DURATION = 30 * 86400
+FLOW_STAGE_ORDER: tuple[FlowStage, ...] = (
+    "user",
+    "node",
+    "token",
+    "group",
+    "model",
+    "channel",
+)
 
 
 class NewApiBindingError(NewApiError):
@@ -73,7 +81,7 @@ class NewApiInstance:
     "astrbot_plugin_newapi",
     "team-s2",
     "查询 new-api 渠道信息并绘制 Dashboard 流图",
-    "1.2.0",
+    "1.2.1",
 )
 class NewApiPlugin(star.Star):
     """Expose read-only new-api administration commands to AstrBot admins."""
@@ -334,9 +342,9 @@ class NewApiPlugin(star.Star):
         try:
             instance = self._instance_for(event)
             raw_stages = self.config.get("flow_stages", ["token", "model", "channel"])
-            valid_stages = {"user", "node", "token", "group", "model", "channel"}
+            selected_stages = set(raw_stages)
             stages = [
-                cast(FlowStage, stage) for stage in raw_stages if stage in valid_stages
+                stage for stage in FLOW_STAGE_ORDER if stage in selected_stages
             ]
             if len(stages) < 2:
                 raise NewApiError("流图配置至少需要选择两个阶段")
@@ -370,8 +378,8 @@ class NewApiPlugin(star.Star):
                     OverflowMode,
                     self.config.get("flow_overflow", "aggregate"),
                 ),
-                1800,
-                1120,
+                3600,
+                2240,
                 Path(font_value) if font_value else None,
             )
             logger.info(

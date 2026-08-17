@@ -64,12 +64,13 @@
     "description": "流图显示阶段",
     "type": "list",
     "options": ["user", "node", "token", "group", "model", "channel"],
-    "hint": "按此顺序绘制，至少选择两个阶段。",
+    "hint": "选择需要显示的阶段；绘图始终按 user → node → token → group → model → channel 排列，至少选择两个。",
     "default": ["token", "model", "channel"]
   },
   "flow_top_n": {
     "description": "每阶段保留的 Top N",
     "type": "int",
+    "hint": "提高此值可显示更多节点，但也会增加图片复杂度。",
     "default": 20
   },
   "flow_overflow": {
