@@ -1,6 +1,6 @@
 # astrbot_plugin_newapi
 
-用于在 AstrBot 中只读查询 [new-api](https://github.com/QuantumNous/new-api) 管理信息的插件。支持按会话绑定多个 new-api 实例、查看渠道、查询 Codex 与智谱 Coding Plan 订阅用量，以及将 Dashboard Flow 绘制成适合聊天发送的浅色 Sankey 图。
+用于在 AstrBot 中只读查询 [new-api](https://github.com/QuantumNous/new-api) 管理信息的插件。支持按会话绑定多个 new-api 实例、查看渠道、查询 Codex 与智谱 Coding Plan 订阅用量，以及将 Dashboard Flow 绘制成适合聊天发送的 Sankey 图。
 
 ## 命令
 
@@ -8,6 +8,7 @@
 
 - `/newapi channel`：列出所有渠道；订阅渠道会同时查询 Account Info
 - `/newapi channel <渠道名称或 ID>`：查看渠道详情和可用的 Account Info
+- `/newapi quota`：生成额度图，展示全部渠道的周额度、5 小时额度、当前窗口和剩余主动重置次数
 - `/newapi flow [时间范围]`：生成流图并发送图片；支持 `30m`、`1h`、`7d` 等格式，不传时使用后台配置
 
 插件不会修改渠道、消费重置次数或执行其他写操作。
@@ -46,6 +47,16 @@ New-Api-User: <user_id>
 ```
 
 `channel` 和 `/api/data/flow` 需要 new-api 管理员权限。若 Flow 需要显示 `token` 或 `node` 阶段，应为相应实例配置 Root 用户的 Access Token；普通管理员能够获得的 Flow 维度较少。
+
+## 额度图片
+
+`/newapi quota` 查询当前会话绑定实例的全部渠道，不受 `channel_list_limit` 限制。支持 Codex（类型 57）、智谱 Coding Plan（类型 62，以及类型 26 配合 `glm-coding-plan`）；其他渠道会在图中标注暂不支持。单个渠道认证失败、超时等不会中断其他渠道的展示。
+
+图片只保留紧凑表格，突出周额度的剩余百分比和距重置时间。周窗口共用日期轴，智谱的 5 小时窗口使用独立时间轴；深色部分表示已用额度，橙线表示当前时间。窗口起点按上游重置时间减去周期推算，不代表历史请求分布。时间统一为 UTC+8。缺失的周额度或重置时间不推定为 0；已到期的窗口标记为等待上游更新。
+
+Codex 仅展示主账户周额度，忽略附加限额（包括 `gpt-5.3-codex-spark`），不显示 5 小时占位信息。主动重置显示接口 `available_count` 返回的剩余次数；独立次数接口失败时可回退到用量接口返回的次数，并注明错误。智谱的主动重置栏留空。查询不会调用主动重置接口。
+
+额度图片复用 `font_path` 字体配置，建议安装中文字体。请求支持 `http_proxy` / `https_proxy` 环境变量；每次额度查询最多同时发出 4 个上游请求。
 
 ## 流图配置
 

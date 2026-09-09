@@ -22,6 +22,8 @@ from .account_info import (
 )
 from .client import NewApiClient, NewApiError
 from .flow_renderer import FlowStage, OverflowMode, render_sankey
+from .quota import account_kind, collect_quotas
+from .quota_renderer import render_quota
 
 CHANNEL_TYPES = {
     1: "OpenAI",
@@ -40,6 +42,7 @@ CHANNEL_TYPES = {
     48: "xAI",
     57: "ChatGPT Subscription (Codex)",
     58: "Advanced Custom",
+    62: "Zhipu Coding Plan",
 }
 CHANNEL_STATUSES = {0: "未知", 1: "启用", 2: "手动禁用", 3: "自动禁用"}
 FLOW_DURATION_UNITS = {"m": 60, "h": 3600, "d": 86400}
@@ -81,8 +84,8 @@ class NewApiInstance:
 @star.register(
     "astrbot_plugin_newapi",
     "team-s2",
-    "查询 new-api 渠道信息并绘制 Dashboard 流图",
-    "1.3.0",
+    "查询 new-api 渠道信息并绘制配额图与 Dashboard 流图",
+    "1.4.0",
 )
 class NewApiPlugin(star.Star):
     """Expose read-only new-api administration commands to AstrBot admins."""
@@ -99,6 +102,7 @@ class NewApiPlugin(star.Star):
         self.instances: list[NewApiInstance] = []
         self.instances_by_umo: dict[str, NewApiInstance] = {}
         self._flow_render_lock = asyncio.Lock()
+        self._quota_render_lock = asyncio.Lock()
         self._load_instances()
 
     async def terminate(self) -> None:
@@ -351,6 +355,32 @@ class NewApiPlugin(star.Star):
             logger.warning("Failed to show new-api channel: %s", error)
             yield event.plain_result(f"查询 new-api 失败：{error}")
 
+    @newapi.command("quota")
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    async def quota(self, event: AstrMessageEvent):
+        """Send a quota image for every channel in the bound instance."""
+        try:
+            instance = self._instance_for(event)
+            async with self._quota_render_lock:
+                rows = await collect_quotas(instance.client)
+                now = time.time()
+                output = Path(get_astrbot_temp_path()) / f"newapi-quota-{uuid4().hex}.png"
+                event.track_temporary_local_file(str(output))
+                font_value = str(self.config.get("font_path", "")).strip()
+                await asyncio.to_thread(
+                    render_quota,
+                    rows,
+                    output,
+                    now,
+                    Path(font_value) if font_value else None,
+                )
+            yield event.image_result(str(output))
+        except NewApiBindingError as error:
+            yield event.plain_result(str(error))
+        except (NewApiError, ValueError, OSError) as error:
+            logger.warning("Failed to render new-api quota: %s", error)
+            yield event.plain_result(f"生成 new-api 额度图失败：{error}")
+
     @newapi.command("flow")
     async def flow(self, event: AstrMessageEvent, duration: str = ""):
         """Render and send the configured new-api Dashboard flow.
@@ -416,13 +446,7 @@ class NewApiPlugin(star.Star):
 
     @staticmethod
     def _account_info_kind(channel: dict[str, Any]) -> str | None:
-        channel_type = int(channel.get("type") or 0)
-        if channel_type == 57:
-            return "codex"
-        base_url = str(channel.get("base_url") or "").strip()
-        if channel_type == 26 and base_url == "glm-coding-plan":
-            return "zhipu"
-        return None
+        return account_kind(channel)
 
     @classmethod
     def _channel_type_name(cls, channel: dict[str, Any]) -> str:

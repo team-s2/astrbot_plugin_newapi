@@ -59,6 +59,7 @@ class NewApiClient:
             self._session = aiohttp.ClientSession(
                 headers=self.headers,
                 timeout=self.timeout,
+                trust_env=True,
             )
         try:
             async with self._session.get(
@@ -76,7 +77,9 @@ class NewApiClient:
 
         if response.status >= 400:
             message = payload.get("message") if isinstance(payload, dict) else None
-            raise NewApiError(message or f"new-api returned HTTP {response.status}")
+            raise NewApiError(
+                f"HTTP {response.status}: {message or 'new-api request failed'}"
+            )
         if not isinstance(payload, dict):
             raise NewApiError("new-api returned an invalid response")
         if not payload.get("success"):
@@ -114,6 +117,30 @@ class NewApiClient:
         if value <= 0:
             raise NewApiError("new-api returned a non-positive quota_per_unit")
         return value
+
+    async def all_channels(self) -> list[dict]:
+        """Read every channel page for the quota image, without the text-list cap."""
+        rows: list[dict] = []
+        seen: set[int] = set()
+        page = 1
+        while True:
+            data = await self.get("/api/channel/", {"p": page, "page_size": 100})
+            if not isinstance(data, dict) or not isinstance(data.get("items"), list):
+                raise NewApiError("new-api returned an invalid channel list")
+            added = 0
+            for item in data["items"]:
+                if not isinstance(item, dict) or not item.get("id"):
+                    raise NewApiError("new-api returned an invalid channel")
+                channel_id = int(item["id"])
+                if channel_id not in seen:
+                    seen.add(channel_id)
+                    rows.append(item)
+                    added += 1
+            if len(rows) >= int(data.get("total", len(rows))):
+                return rows
+            if not added:
+                raise NewApiError("渠道分页未返回新数据，请重试")
+            page += 1
 
     async def find_channel(self, query: str) -> dict:
         """Resolve a channel ID or an exact channel name.

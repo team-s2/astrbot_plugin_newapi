@@ -143,6 +143,7 @@ def _load_font(size: int, font_path: Path | None) -> ImageFont.FreeTypeFont:
         Path("/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc"),
         Path("C:/Windows/Fonts/msyhbd.ttc"),
         Path("/System/Library/Fonts/PingFang.ttc"),
+        Path("/System/Library/Fonts/STHeiti Medium.ttc"),
         Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
     ]
     for candidate in candidates:
