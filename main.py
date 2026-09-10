@@ -85,10 +85,10 @@ class NewApiInstance:
     "astrbot_plugin_newapi",
     "team-s2",
     "查询 new-api 渠道信息并绘制配额图与 Dashboard 流图",
-    "1.4.0",
+    "1.4.1",
 )
 class NewApiPlugin(star.Star):
-    """Expose read-only new-api administration commands to AstrBot admins."""
+    """Expose read-only new-api commands to sessions bound to an instance."""
 
     def __init__(self, context: star.Context, config: AstrBotConfig) -> None:
         """Initialize the plugin from AstrBot configuration.
@@ -356,7 +356,6 @@ class NewApiPlugin(star.Star):
             yield event.plain_result(f"查询 new-api 失败：{error}")
 
     @newapi.command("quota")
-    @filter.permission_type(filter.PermissionType.ADMIN)
     async def quota(self, event: AstrMessageEvent):
         """Send a quota image for every channel in the bound instance."""
         try:
