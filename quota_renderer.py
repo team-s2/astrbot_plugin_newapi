@@ -282,7 +282,23 @@ def render_quota(
         if row.issue:
             y += row_height
             continue
-        if row.reset_count is not None:
+        if row.reset_breakdown:
+            # Zhipu split display: 5-hour and weekly cards are independent
+            # pools; a merged count would hide which window can be reset.
+            offset = y + 26
+            for label, value in row.reset_breakdown:
+                text = str(value)
+                c.text((1520, offset), text, 24)
+                c.text(
+                    (1520 + c.fonts[24].getlength(text) + 8, offset + 8),
+                    f"次 · {label}",
+                    15,
+                    MUTED,
+                )
+                offset += 40
+            if row.reset_note:
+                c.wrap((1520, y + 112), row.reset_note, 205, 16, 2, MUTED)
+        elif row.reset_count is not None:
             count = str(row.reset_count)
             c.text((1520, y + 30), count, 34)
             c.text(
@@ -290,12 +306,11 @@ def render_quota(
             )
             if row.reset_note:
                 c.wrap((1520, y + 81), row.reset_note, 205, 16, 2, MUTED)
-        elif row.provider == "Codex":
+        elif row.reset_note:
             c.text(
                 (1520, y + 36), "读取失败" if row.reset_failed else "未提供", 22, MUTED
             )
-            if row.reset_failed:
-                c.wrap((1520, y + 76), row.reset_note, 205, 16, 2, MUTED)
+            c.wrap((1520, y + 76), row.reset_note, 205, 16, 2, MUTED)
         y += row_height
 
     output.parent.mkdir(parents=True, exist_ok=True)

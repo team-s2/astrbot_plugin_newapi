@@ -41,6 +41,9 @@ class ChannelQuota:
     reset_count: int | None = None
     reset_note: str = ""
     reset_failed: bool = False
+    # Per-window reset-card counts, e.g. (("5 小时", 5), ("每周", 5)). Rendered
+    # instead of the merged reset_count so the two pools stay distinguishable.
+    reset_breakdown: tuple[tuple[str, int], ...] = ()
     issue: str = ""
     unsupported: bool = False
     limit_note: str = ""
@@ -145,6 +148,7 @@ def normalize_quota(
         )
     count = None
     reset_note = "上游未提供主动重置次数" if kind == "zhipu" else "未返回重置次数"
+    reset_breakdown: tuple[tuple[str, int], ...] = ()
     if kind == "zhipu":
         reset = usage.get("reset") if isinstance(usage, dict) else None
         if isinstance(reset, dict):
@@ -153,6 +157,10 @@ def normalize_quota(
             if isinstance(five_hour, list) and isinstance(week, list):
                 count = len(five_hour) + len(week)
                 reset_note = ""
+                reset_breakdown = (
+                    ("5 小时", len(five_hour)),
+                    ("每周", len(week)),
+                )
         elif isinstance(usage, dict):
             reason = str(
                 usage.get("reset_unavailable_reason") or ""
@@ -178,6 +186,7 @@ def normalize_quota(
         reset_count=count,
         reset_note=reset_note,
         reset_failed=isinstance(credits, Exception),
+        reset_breakdown=reset_breakdown,
     )
     if isinstance(usage, Exception):
         return ChannelQuota(**common, issue=issue_text(usage))
