@@ -185,6 +185,26 @@ def _zhipu_limit_line(label: str, limit: Any, unit: str) -> str | None:
     return f"{label}：{usage_text} · {_reset_text(limit, milliseconds=True)}"
 
 
+def _zhipu_reset_card_line(label: str, cards: Any) -> str | None:
+    """Render one reset-card row: count plus the soonest expiry."""
+    if not isinstance(cards, list):
+        return None
+    count = len(cards)
+    stamps = [
+        _number(card.get("expire_at"))
+        for card in cards
+        if isinstance(card, dict)
+    ]
+    stamps = [stamp for stamp in stamps if stamp]
+    suffix = ""
+    if stamps:
+        suffix = (
+            "，最早到期 "
+            + datetime.fromtimestamp(min(stamps) / 1000).strftime("%m-%d %H:%M")
+        )
+    return f"{label}重置卡：{count} 张可用{suffix}" if count else f"{label}重置卡：暂无"
+
+
 def format_zhipu_account(usage: dict[str, Any]) -> list[str]:
     """Render the useful fields from a Zhipu Coding Plan Account Info response."""
     lines = [f"套餐 {str(usage.get('level') or '未知').upper()}"]
@@ -196,4 +216,13 @@ def format_zhipu_account(usage: dict[str, Any]) -> list[str]:
         line = _zhipu_limit_line(label, usage.get(key), unit)
         if line:
             lines.append(line)
+    reset = usage.get("reset")
+    if isinstance(reset, dict):
+        for label, key in (
+            ("5 小时", "available_five_hour_resets"),
+            ("每周", "available_week_resets"),
+        ):
+            line = _zhipu_reset_card_line(label, reset.get(key))
+            if line:
+                lines.append(line)
     return lines

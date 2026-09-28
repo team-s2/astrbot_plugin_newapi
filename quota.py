@@ -50,7 +50,7 @@ def account_kind(channel: dict[str, Any]) -> str | None:
     channel_type = int(channel.get("type") or 0)
     if channel_type == 57:
         return "codex"
-    if channel_type == 62 or (
+    if channel_type == 100 or (
         channel_type == 26
         and str(channel.get("base_url") or "").strip() == "glm-coding-plan"
     ):
@@ -145,6 +145,14 @@ def normalize_quota(
         )
     count = None
     reset_note = "上游未提供主动重置次数" if kind == "zhipu" else "未返回重置次数"
+    if kind == "zhipu":
+        reset = usage.get("reset") if isinstance(usage, dict) else None
+        if isinstance(reset, dict):
+            five_hour = reset.get("available_five_hour_resets")
+            week = reset.get("available_week_resets")
+            if isinstance(five_hour, list) and isinstance(week, list):
+                count = len(five_hour) + len(week)
+                reset_note = ""
     if kind == "codex":
         embedded = (
             usage.get("rate_limit_reset_credits") if isinstance(usage, dict) else None

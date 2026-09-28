@@ -1,5 +1,11 @@
 # 更新日志
 
+## 1.5.0 - 2026-09-28
+
+- 智谱 Coding Plan 渠道类型跟随 new-api 从 62 改为 100（62 已被上游分配给 vLLM）；旧渠道仍可通过类型 26 + `glm-coding-plan` 地址识别。
+- `/newapi channel` 的智谱 Account Info 展示 5 小时 / 每周重置卡数量与最早到期时间。
+- `/newapi quota` 的智谱行显示可用重置卡总数，不再提示“上游未提供主动重置次数”。
+
 ## 1.4.1 - 2026-09-10
 
 - `/newapi quota` 不再要求 AstrBot 管理员权限，与 `/newapi channel`、`/newapi flow` 保持一致，所有绑定实例的会话均可使用。

@@ -42,7 +42,7 @@ CHANNEL_TYPES = {
     48: "xAI",
     57: "ChatGPT Subscription (Codex)",
     58: "Advanced Custom",
-    62: "Zhipu Coding Plan",
+    100: "Zhipu Coding Plan",
 }
 CHANNEL_STATUSES = {0: "未知", 1: "启用", 2: "手动禁用", 3: "自动禁用"}
 FLOW_DURATION_UNITS = {"m": 60, "h": 3600, "d": 86400}
