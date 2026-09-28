@@ -46,7 +46,7 @@ CHANNEL_TYPES = {
 }
 CHANNEL_STATUSES = {0: "未知", 1: "启用", 2: "手动禁用", 3: "自动禁用"}
 FLOW_DURATION_UNITS = {"m": 60, "h": 3600, "d": 86400}
-MAX_FLOW_DURATION = 30 * 86400
+MAX_FLOW_DURATION = 365 * 86400
 FLOW_STAGE_ORDER: tuple[FlowStage, ...] = (
     "user",
     "node",
@@ -68,7 +68,7 @@ def parse_flow_duration(value: str) -> int:
         raise NewApiError("时间范围格式错误，请使用 30m、1h 或 7d 等格式")
     seconds = int(match.group(1)) * FLOW_DURATION_UNITS[match.group(2).lower()]
     if seconds > MAX_FLOW_DURATION:
-        raise NewApiError("统计时间范围不能超过 30 天")
+        raise NewApiError("统计时间范围不能超过 365 天")
     return seconds
 
 
@@ -133,7 +133,7 @@ class NewApiPlugin(star.Star):
             except (TypeError, ValueError) as error:
                 raise ValueError(f"new-api 实例 #{index} 的用户 ID 无效") from error
             if not name:
-                raise ValueError(f"new-api 实例 #{index} 缺少实例名称")
+                raise ValueError(f"new-api 实例缺少实例名称")
             if not base_url:
                 raise ValueError(f"new-api 实例“{name}”缺少地址")
             if not access_token:
