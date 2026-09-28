@@ -133,7 +133,7 @@ class NewApiPlugin(star.Star):
             except (TypeError, ValueError) as error:
                 raise ValueError(f"new-api 实例 #{index} 的用户 ID 无效") from error
             if not name:
-                raise ValueError(f"new-api 实例缺少实例名称")
+                raise ValueError(f"new-api 实例 #{index} 缺少实例名称")
             if not base_url:
                 raise ValueError(f"new-api 实例“{name}”缺少地址")
             if not access_token:
