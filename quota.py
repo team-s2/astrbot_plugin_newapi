@@ -153,6 +153,11 @@ def normalize_quota(
             if isinstance(five_hour, list) and isinstance(week, list):
                 count = len(five_hour) + len(week)
                 reset_note = ""
+        elif isinstance(usage, dict):
+            reason = str(
+                usage.get("reset_unavailable_reason") or ""
+            ).strip()
+            reset_note = "重置卡查询失败：" + (reason or "未知原因")
     if kind == "codex":
         embedded = (
             usage.get("rate_limit_reset_credits") if isinstance(usage, dict) else None

@@ -225,4 +225,9 @@ def format_zhipu_account(usage: dict[str, Any]) -> list[str]:
             line = _zhipu_reset_card_line(label, reset.get(key))
             if line:
                 lines.append(line)
+    else:
+        reason = str(usage.get("reset_unavailable_reason") or "").strip()
+        lines.append(
+            "重置卡查询失败：" + (reason or "未知原因，请检查渠道 OAuth 凭据")
+        )
     return lines
