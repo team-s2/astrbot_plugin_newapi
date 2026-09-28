@@ -42,9 +42,20 @@
           "flow_stages": {
             "description": "流图显示阶段",
             "type": "list",
-            "options": ["user", "node", "token", "group", "model", "channel"],
+            "options": [
+              "user",
+              "node",
+              "token",
+              "group",
+              "model",
+              "channel"
+            ],
             "hint": "当前实例的流图阶段；始终按 user → node → token → group → model → channel 排列，至少选择两个。",
-            "default": ["token", "model", "channel"]
+            "default": [
+              "token",
+              "model",
+              "channel"
+            ]
           }
         }
       }
@@ -64,7 +75,7 @@
   "flow_hours": {
     "description": "流图时间范围（小时）",
     "type": "int",
-    "hint": "未在 flow 命令中指定时间范围时使用，最大 720 小时（30 天）。",
+    "hint": "未在 flow 命令中指定时间范围时使用，无上限。",
     "default": 24
   },
   "flow_top_n": {
@@ -76,8 +87,14 @@
   "flow_overflow": {
     "description": "Top N 以外的数据",
     "type": "string",
-    "options": ["aggregate", "hide"],
-    "labels": ["合并为 Other", "隐藏整条路径"],
+    "options": [
+      "aggregate",
+      "hide"
+    ],
+    "labels": [
+      "合并为 Other",
+      "隐藏整条路径"
+    ],
     "default": "aggregate"
   },
   "font_path": {

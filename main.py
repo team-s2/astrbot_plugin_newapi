@@ -46,7 +46,6 @@ CHANNEL_TYPES = {
 }
 CHANNEL_STATUSES = {0: "未知", 1: "启用", 2: "手动禁用", 3: "自动禁用"}
 FLOW_DURATION_UNITS = {"m": 60, "h": 3600, "d": 86400}
-MAX_FLOW_DURATION = 30 * 86400
 FLOW_STAGE_ORDER: tuple[FlowStage, ...] = (
     "user",
     "node",
@@ -66,10 +65,7 @@ def parse_flow_duration(value: str) -> int:
     match = re.fullmatch(r"([1-9]\d*)([mhd])", value.strip(), re.IGNORECASE)
     if not match:
         raise NewApiError("时间范围格式错误，请使用 30m、1h 或 7d 等格式")
-    seconds = int(match.group(1)) * FLOW_DURATION_UNITS[match.group(2).lower()]
-    if seconds > MAX_FLOW_DURATION:
-        raise NewApiError("统计时间范围不能超过 30 天")
-    return seconds
+    return int(match.group(1)) * FLOW_DURATION_UNITS[match.group(2).lower()]
 
 
 @dataclass(frozen=True, slots=True)
@@ -394,13 +390,7 @@ class NewApiPlugin(star.Star):
             range_seconds = (
                 parse_flow_duration(duration)
                 if duration
-                else max(
-                    3600,
-                    min(
-                        int(self.config.get("flow_hours", 24)) * 3600,
-                        MAX_FLOW_DURATION,
-                    ),
-                )
+                else max(3600, int(self.config.get("flow_hours", 24)) * 3600)
             )
             end_timestamp = int(time.time())
             rows = await instance.client.flow(
