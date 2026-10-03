@@ -1,4 +1,4 @@
-"""Render new-api flow rows as a light Sankey diagram with Pillow."""
+"""Render new-api flow rows as a light Sankey diagram with Skia."""
 
 from __future__ import annotations
 
@@ -8,27 +8,33 @@ from math import ceil
 from pathlib import Path
 from typing import Any, Literal
 
-from PIL import Image, ImageDraw, ImageFont
+import skia
 
 from .account_info import compact_token_count
+from .painter import Painter
 
 FlowStage = Literal["user", "node", "token", "group", "model", "channel"]
 OverflowMode = Literal["aggregate", "hide"]
 
 PALETTE = (
-    "#48c98e",
-    "#2f72f6",
-    "#f9c51b",
-    "#42c6e9",
-    "#ff8b18",
-    "#d2b5f3",
-    "#8252df",
-    "#9fc5f8",
-    "#ffc565",
-    "#b8e8cd",
-    "#ffe578",
-    "#38557d",
+    0xFF48C98E,
+    0xFF2F72F6,
+    0xFFF9C51B,
+    0xFF42C6E9,
+    0xFFFF8B18,
+    0xFFD2B5F3,
+    0xFF8252DF,
+    0xFF9FC5F8,
+    0xFFFFC565,
+    0xFFB8E8CD,
+    0xFFFFE578,
+    0xFF38557D,
 )
+BG = 0xFFF4F5F7
+PANEL = 0xFFFFFFFF
+INK = 0xFF1D2230
+SUB = 0xFF6B7280
+TRUNK = 0xFF9AA3B2  # single nodes ahead of the colour-giving stage
 
 OTHER_LABELS: dict[FlowStage, str] = {
     "user": "Other users",
@@ -45,6 +51,9 @@ MAX_IMAGE_PIXELS = 64_000_000
 FONT_SIZE = 40
 HORIZONTAL_MARGIN = 80
 VERTICAL_MARGIN = 80
+PANEL_INSET = 32  # white panel edge inside the light page
+NODE_RADIUS = 6
+VALUE_GAP = 14  # between a node's name and its token count
 NODE_WIDTH = 56
 NODE_GAP = 14
 MIN_NODE_HEIGHT = 8
@@ -127,31 +136,6 @@ def _row_node(row: dict[str, Any], stage: FlowStage) -> FlowNode:
     return FlowNode(id=f"{stage}:{identity}", label=label, kind=stage)
 
 
-def _load_font(size: int, font_path: Path | None) -> ImageFont.FreeTypeFont:
-    """Load a custom, CJK, or portable fallback font.
-
-    Args:
-        size: Font size in pixels.
-        font_path: Optional explicitly configured font file.
-
-    Returns:
-        A Pillow TrueType font.
-    """
-    candidates = [
-        font_path,
-        Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"),
-        Path("/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc"),
-        Path("C:/Windows/Fonts/msyhbd.ttc"),
-        Path("/System/Library/Fonts/PingFang.ttc"),
-        Path("/System/Library/Fonts/STHeiti Medium.ttc"),
-        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
-    ]
-    for candidate in candidates:
-        if candidate and candidate.is_file():
-            return ImageFont.truetype(candidate, size)
-    return ImageFont.truetype("DejaVuSans-Bold.ttf", size)
-
-
 def _truncate(text: str, limit: int) -> str:
     """Shorten a label to the drawing limit.
 
@@ -165,27 +149,10 @@ def _truncate(text: str, limit: int) -> str:
     return text if len(text) <= limit else f"{text[: limit - 1]}…"
 
 
-def _node_label(node: FlowNode, value: float) -> str:
-    """Format the text drawn beside a Sankey node."""
-    return f"{_truncate(node.label, 22)} · {compact_token_count(value)}"
-
-
-def _bezier(a: float, b: float, c: float, d: float, t: float) -> float:
-    """Evaluate one coordinate of a cubic Bézier curve.
-
-    Args:
-        a: Start coordinate.
-        b: First control coordinate.
-        c: Second control coordinate.
-        d: End coordinate.
-        t: Position along the curve from zero to one.
-
-    Returns:
-        Interpolated coordinate.
-    """
-    return (
-        (1 - t) ** 3 * a + 3 * (1 - t) ** 2 * t * b + 3 * (1 - t) * t**2 * c + t**3 * d
-    )
+def _node_label(node: FlowNode, value: float) -> tuple[str, str]:
+    """Name and token count drawn beside a Sankey node."""
+    # Every value is a token count, so the shared suffix is left out.
+    return _truncate(node.label, 22), compact_token_count(value).removesuffix(" tokens")
 
 
 def render_sankey(
@@ -261,36 +228,76 @@ def render_sankey(
     if not paths:
         raise ValueError("no positive flow data is available")
 
-    root_ids = sorted({path[0] for path in paths})
+    # Colour by the first stage that actually branches: a lone user or node
+    # would otherwise paint the whole diagram in a single colour.
+    color_stage = next(
+        (
+            index
+            for index in range(len(stages))
+            if len({path[index] for path in paths}) > 1
+        ),
+        0,
+    )
+    color_totals: defaultdict[str, float] = defaultdict(float)
+    for path, value in paths.items():
+        color_totals[path[color_stage]] += value
+    # Palette runs bottom-up through that column, which is laid out largest
+    # first, so the first colour lands on the bottom node.
+    color_ids = sorted(
+        color_totals,
+        key=lambda node_id: (-color_totals[node_id], node_info[node_id].label),
+        reverse=True,
+    )
     root_colors = {
-        node_id: PALETTE[index % len(PALETTE)] for index, node_id in enumerate(root_ids)
+        node_id: PALETTE[index % len(PALETTE)]
+        for index, node_id in enumerate(color_ids)
     }
-    node_colors: dict[str, str] = {}
     node_totals: list[defaultdict[str, float]] = [defaultdict(float) for _ in stages]
     link_totals: list[defaultdict[tuple[str, str], float]] = [
         defaultdict(float) for _ in range(len(stages) - 1)
     ]
-    link_colors: list[dict[tuple[str, str], str]] = [{} for _ in range(len(stages) - 1)]
+    # Shared nodes and ribbons take the colour that contributes most to them.
+    node_votes: defaultdict[str, defaultdict[int, float]] = defaultdict(
+        lambda: defaultdict(float)
+    )
+    link_votes: list[defaultdict[tuple[str, str], defaultdict[int, float]]] = [
+        defaultdict(lambda: defaultdict(float)) for _ in range(len(stages) - 1)
+    ]
     for path, value in paths.items():
-        color = root_colors[path[0]]
+        color = root_colors[path[color_stage]]
         for index, node_id in enumerate(path):
             node_totals[index][node_id] += value
-            node_colors.setdefault(node_id, color)
+            node_votes[node_id][color if index >= color_stage else TRUNK] += value
         for index in range(len(path) - 1):
             key = (path[index], path[index + 1])
             link_totals[index][key] += value
-            link_colors[index].setdefault(key, color)
+            link_votes[index][key][color] += value
 
-    font = _load_font(FONT_SIZE, font_path)
-    label_bbox = font.getbbox("Ag国pq")
-    label_height = label_bbox[3] - label_bbox[1]
+    def dominant(votes: dict[int, float]) -> int:
+        return max(votes, key=lambda color: (votes[color], color))
+
+    node_colors = {node_id: dominant(votes) for node_id, votes in node_votes.items()}
+    link_colors = [
+        {key: dominant(votes) for key, votes in stage.items()} for stage in link_votes
+    ]
+    del node_votes, link_votes
+
+    measure = Painter(1, 1, font_path, scale=1)
+    metrics = measure.font(FONT_SIZE, "regular").getMetrics()
+    label_height = metrics.fDescent - metrics.fAscent
     label_line_gap = max(LABEL_LINE_GAP, label_height + 8)
+
+    def label_width(node_id: str, value: float) -> float:
+        name, count = _node_label(node_info[node_id], value)
+        return (
+            measure.measure(name, FONT_SIZE)
+            + VALUE_GAP
+            + measure.measure(count, FONT_SIZE, "bold")
+        )
+
     stage_label_widths = [
         max(
-            (
-                font.getlength(_node_label(node_info[node_id], value))
-                for node_id, value in totals.items()
-            ),
+            (label_width(node_id, value) for node_id, value in totals.items()),
             default=0,
         )
         for totals in node_totals
@@ -340,11 +347,7 @@ def render_sankey(
             totals,
             key=lambda node_id: (-totals[node_id], node_info[node_id].label),
         )
-        available = (
-            height
-            - 2 * VERTICAL_MARGIN
-            - NODE_GAP * max(len(ordered) - 1, 0)
-        )
+        available = height - 2 * VERTICAL_MARGIN - NODE_GAP * max(len(ordered) - 1, 0)
         baseline = min(min_node_height, available / max(len(ordered), 1))
         flexible = max(available - baseline * len(ordered), 0)
         total = sum(totals.values()) or 1
@@ -420,100 +423,67 @@ def render_sankey(
     node_count = sum(len(stage) for stage in positions)
     link_count = len(links)
     del prepared, stage_totals, top_ids, paths
-    del root_ids, root_colors, node_colors, link_totals, link_colors, node_totals
+    del (
+        color_ids,
+        root_colors,
+        node_colors,
+        link_totals,
+        link_colors,
+        node_totals,
+    )
 
-    image = Image.new("RGB", (width, height), "#ffffff")
-    link_draw = ImageDraw.Draw(image, "RGBA")
+    p = Painter(width, height, font_path, scale=1, background=BG)
+    p.rect(
+        PANEL_INSET, PANEL_INSET, width - PANEL_INSET, height - PANEL_INSET, PANEL, 28
+    )
+
+    # Largest ribbons first so thin ones stay visible on top.
     for link in sorted(links, key=lambda item: item["value"], reverse=True):
-        control = (link["x1"] - link["x0"]) * 0.48
-        top: list[tuple[float, float]] = []
-        bottom: list[tuple[float, float]] = []
-        for step in range(31):
-            t = step / 30
-            x = _bezier(
-                link["x0"],
-                link["x0"] + control,
-                link["x1"] - control,
-                link["x1"],
-                t,
-            )
-            top.append(
-                (
-                    x,
-                    _bezier(
-                        link["sy0"],
-                        link["sy0"],
-                        link["ty0"],
-                        link["ty0"],
-                        t,
-                    ),
-                )
-            )
-            bottom.append(
-                (
-                    x,
-                    _bezier(
-                        link["sy1"],
-                        link["sy1"],
-                        link["ty1"],
-                        link["ty1"],
-                        t,
-                    ),
-                )
-            )
-        color = link["color"].lstrip("#")
-        rgb = tuple(int(color[offset : offset + 2], 16) for offset in (0, 2, 4))
-        link_draw.polygon(
-            top + list(reversed(bottom)),
-            fill=(*rgb, round(link["alpha"] * 255)),
+        x0, x1 = link["x0"], link["x1"]
+        control = (x1 - x0) * 0.48
+        path = skia.Path()
+        path.moveTo(x0, link["sy0"])
+        path.cubicTo(
+            x0 + control, link["sy0"], x1 - control, link["ty0"], x1, link["ty0"]
         )
-    draw = ImageDraw.Draw(image)
+        path.lineTo(x1, link["ty1"])
+        path.cubicTo(
+            x1 - control, link["ty1"], x0 + control, link["sy1"], x0, link["sy1"]
+        )
+        path.close()
+        color = (link["color"] & 0xFFFFFF) | (round(link["alpha"] * 255) << 24)
+        p.canvas.drawPath(path, skia.Paint(AntiAlias=True, Color=color))
+
     label_top = VERTICAL_MARGIN + label_height / 2
     label_bottom = height - VERTICAL_MARGIN - label_height / 2
-
     for stage, stage_positions in enumerate(positions):
         ordered_nodes = sorted(stage_positions.items(), key=lambda item: item[1]["y0"])
+        # Labels follow their nodes but keep one line apart, pushed up from the
+        # bottom edge if the column runs out of room.
         label_centers: list[float] = []
         for _node_id, node in ordered_nodes:
             desired = (node["y0"] + node["y1"]) / 2
-            label_centers.append(
-                max(
-                    desired,
-                    label_centers[-1] + label_line_gap
-                    if label_centers
-                    else label_top,
-                )
-            )
+            floor_y = label_centers[-1] + label_line_gap if label_centers else label_top
+            label_centers.append(max(desired, floor_y))
         if label_centers and label_centers[-1] > label_bottom:
             label_centers[-1] = label_bottom
             for index in range(len(label_centers) - 2, -1, -1):
                 label_centers[index] = min(
-                    label_centers[index],
-                    label_centers[index + 1] - label_line_gap,
+                    label_centers[index], label_centers[index + 1] - label_line_gap
                 )
-
         for (node_id, node), label_center in zip(
             ordered_nodes, label_centers, strict=True
         ):
             x = node["x"]
-            draw.rectangle(
-                (x, node["y0"], x + NODE_WIDTH, node["y1"]),
-                fill=node["color"],
-                outline="#b7c0cc",
-                width=1,
-            )
+            radius = min(NODE_RADIUS, (node["y1"] - node["y0"]) / 2)
+            p.rect(x, node["y0"], x + NODE_WIDTH, node["y1"], node["color"], radius)
+            name, count = _node_label(node_info[node_id], node["value"])
             label_x = x + NODE_WIDTH + LABEL_PADDING
-            label = _node_label(node_info[node_id], node["value"])
-            draw.text(
-                (label_x, label_center),
-                label,
-                font=font,
-                fill="#374151",
-                anchor="lm",
-            )
+            label_x += p.text(label_x, label_center, name, FONT_SIZE, INK)
+            p.text(label_x + VALUE_GAP, label_center, count, FONT_SIZE, SUB, "bold")
 
     output.parent.mkdir(parents=True, exist_ok=True)
-    image.save(output, "PNG")
+    p.save(output)
     return RenderSummary(
         row_count=len(rows),
         node_count=node_count,

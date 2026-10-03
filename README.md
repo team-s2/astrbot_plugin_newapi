@@ -72,7 +72,15 @@ New-Api-User: <user_id>
 
 渠道列表中的“计费额度”来自 new-api 的 `used_quota`，并使用 `/api/status` 返回的 `quota_per_unit` 将渠道 USD 余额换算为相同单位。它是 new-api 的内部计费额度，不等同于 Flow 中的实际请求 token 数。
 
-绘图依赖 Pillow。插件会依次寻找 Noto Sans CJK、微软雅黑、苹方和 DejaVu Sans；为了正确显示中文，推荐在自定义 AstrBot 镜像中安装 Noto CJK 字体，例如 Debian/Ubuntu 镜像中的 `fonts-noto-cjk`。也可以通过 `font_path` 指向镜像内的 TTF/TTC 字体文件。
+流图与额度图均使用 Skia（`skia-python`）绘制，优先使用 Noto Sans CJK SC 的 Regular / Bold 字重，找不到时依次尝试思源黑体、苹方和微软雅黑。为了正确显示中文，推荐在自定义 AstrBot 镜像中安装 Noto CJK 字体，例如 Debian/Ubuntu 镜像中的 `fonts-noto-cjk`。也可以通过 `font_path` 指向镜像内的 TTF/TTC 字体文件。
+
+`skia-python` 的 Linux 版本依赖系统的 `libEGL.so.1` 与 `libGL.so.1`，`python:*-slim` 等精简镜像需要额外安装：
+
+```bash
+apt-get install -y --no-install-recommends libegl1 libgl1
+```
+
+额度图每个渠道占一行，依次为周额度日期轴、5 小时额度小时轴和重置卡日期轴，三条轴共用橙色的“现在”线。额度窗口按实际起止时间绘制，深色为已用、浅色为剩余；已用部分越过“现在”线的一段标红，表示用量快于时间进度。重置卡按到期日显示为圆点，同期多张合并为带数字的圆点，3 天内到期为橙色、24 小时内到期为红色。
 
 ## 兼容性
 

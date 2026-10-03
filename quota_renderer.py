@@ -1,345 +1,369 @@
-"""Compact quota rows and reset-card events, rendered with Pillow."""
+"""Subscription quota overview rendered with Skia.
+
+One line per channel. The weekly window sits on a date axis and the 5h window
+on an hour axis, each drawn where it falls in time with dark = used and
+light = remaining; an orange line marks now, and used quota past it is ahead
+of pace and turns red. Reset cards get a third, narrow date axis at the end of
+the row, one thin lane per card type.
+"""
 
 from __future__ import annotations
 
-from collections import Counter
 from datetime import datetime, timedelta, timezone
 from math import ceil, floor
 from pathlib import Path
 
-from PIL import Image, ImageDraw
+import skia
 
-from .flow_renderer import _load_font
+from .painter import UNIT_GAP, Painter
 from .quota import ChannelQuota, QuotaWindow, ResetPool
 
 TZ = timezone(timedelta(hours=8))
-BG = "#FFFFFF"
-INK = "#202738"
-MUTED = "#737D90"
-LINE = "#E8EBF2"
-PURPLE = "#7970CE"
-PALE = "#EEECFA"
-TEAL = "#319C91"
-TEAL_PALE = "#E4F3EF"
-ORANGE = "#D99335"
-ERROR = "#BD5555"
-WIDTH = 1800
-LEFT = 40
-RIGHT = WIDTH - LEFT
-TIME_LEFT = 880
-TIME_RIGHT = RIGHT - 24
 DAY = 86400
+HOUR = 3600
+
+PANEL = 0xFFFFFFFF
+RULE = 0xFFEDEFF3
+GRID = 0xFFF1F2F5
+INK = 0xFF1D2230
+SUB = 0xFF6B7280
+MUTED = 0xFFA3A9B5
+TODAY = 0xFFF6F7FB
+NOW = 0xFFF08A24
+OVER = 0xFFE5484D
+WARN = 0xFFEC8E2C
+WEEK = 0xFF6B5FD3
+WEEK_PALE = 0xFFE7E4F8
+FIVE = 0xFF12998F
+FIVE_PALE = 0xFFDDF1EE
+CARD = 0xFF5B5BD6
+CARD_LANE = 0xFFE1E1F7
+
+WIDTH = 1216
+MARGIN = 24
+PAD = 20
+LEFT = MARGIN + PAD
+RIGHT = WIDTH - MARGIN - PAD
+NAME_W = 192
+# Right edges of the value cells, then the three time axes they introduce.
+WEEK_VALUE = 294
+WEEK_X0, WEEK_X1 = 308, 626
+FIVE_VALUE = 694
+FIVE_X0, FIVE_X1 = 708, 906
+CARD_LABEL = 920
+CARD_VALUE = 952
+CARD_X0, CARD_X1 = 964, RIGHT
+TITLE_H = 60
+HEAD_H = 34
+ROW_H = 52
+LANE_DY = 9  # Zhipu's week and 5h card lanes sit this far above/below centre
+CHIP_GAP = 10
+BAR_H = 12
 
 
 def date_text(timestamp: float, fmt: str = "%m/%d %H:%M") -> str:
     return datetime.fromtimestamp(timestamp, TZ).strftime(fmt)
 
 
-def countdown(reset_at: float | None, now: float) -> str:
-    if reset_at is None:
-        return "重置时间未知"
-    seconds = reset_at - now
-    if seconds <= 0:
-        return "已到期 · 待上游更新"
+def day_start(timestamp: float) -> float:
+    offset = 8 * 3600
+    return floor((timestamp + offset) / DAY) * DAY - offset
+
+
+def duration_text(seconds: float) -> str:
+    """Two most significant units, e.g. 4天21时, with narrow gaps around units."""
     minutes = max(1, int(seconds / 60))
     days, rest = divmod(minutes, 1440)
     hours, mins = divmod(rest, 60)
-    if days:
-        return f"{days} 天 {hours} 小时后重置"
-    if hours:
-        return f"{hours} 小时 {mins} 分钟后重置"
-    return f"{mins} 分钟后重置"
+    parts = [(days, "天"), (hours, "时")] if days else [(hours, "时"), (mins, "分")]
+    if not days and not hours:
+        parts = [(mins, "分")]
+    if len(parts) == 2 and parts[1][0] == 0:
+        parts = parts[:1]
+    return UNIT_GAP.join(f"{value}{UNIT_GAP}{unit}" for value, unit in parts)
 
 
-class QuotaCanvas:
-    def __init__(self, height: int, font_path: Path | None):
-        self.image = Image.new("RGB", (WIDTH, height), BG)
-        self.draw = ImageDraw.Draw(self.image)
-        self.fonts = {
-            size: _load_font(size, font_path)
-            for size in (15, 16, 17, 18, 20, 22, 24, 28)
-        }
+def percent_text(value: float) -> str:
+    if value >= 10 or value == 0:
+        return f"{value:.0f}%"
+    return f"{value:.1f}".rstrip("0").rstrip(".") + "%"
 
-    def text(self, xy, value, size=18, fill=INK):
-        self.draw.text(xy, str(value), font=self.fonts[size], fill=fill, anchor="lt")
 
-    def fit(self, value: str, width: float, size=18) -> str:
-        value = " ".join(value.split())
-        font = self.fonts[size]
-        if font.getlength(value) <= width:
-            return value
-        while value and font.getlength(value + "…") > width:
-            value = value[:-1]
-        return value + "…"
+def card_bins(
+    pool: ResetPool, start: float, bin_days: int
+) -> list[tuple[int, int, float]]:
+    """Cards grouped into ``bin_days``-day bins: (bin, count, earliest expiry)."""
+    bins: dict[int, list[float]] = {}
+    for stamp in pool.expires_at:
+        day = round((day_start(stamp) - start) / DAY)
+        bins.setdefault(day // bin_days, []).append(stamp)
+    return [(index, len(stamps), min(stamps)) for index, stamps in sorted(bins.items())]
 
-    def rounded(self, box, fill, radius=8):
-        self.draw.rounded_rectangle(box, radius=radius, fill=fill)
 
-    def pos(self, stamp: float, origin: float, duration: float) -> float:
-        return TIME_LEFT + (stamp - origin) / duration * (TIME_RIGHT - TIME_LEFT)
+class Axis:
+    """Linear time scale from ``start`` to ``end`` over pixels ``x0``..``x1``."""
 
-    def window_bar(
-        self,
-        window: QuotaWindow,
-        y: int,
-        now: float,
-        origin: float,
-        duration: float,
-        color: str,
-        pale: str,
-    ):
-        start, end = window.start_at, window.reset_at
-        if start is None or end is None:
-            self.text((TIME_LEFT, y + 3), "重置时间未知", 16, MUTED)
-            return
-        if end <= now:
-            self.text((TIME_LEFT, y + 3), "窗口已到期 · 等待上游更新", 16, MUTED)
-            return
-        raw_left, raw_right = (
-            self.pos(start, origin, duration),
-            self.pos(end, origin, duration),
+    def __init__(self, start: float, end: float, x0: float, x1: float):
+        self.start, self.end, self.x0, self.x1 = start, end, x0, x1
+
+    def x(self, stamp: float) -> float:
+        return self.x0 + (stamp - self.start) / (self.end - self.start) * (
+            self.x1 - self.x0
         )
-        x1, x2 = max(TIME_LEFT, raw_left), min(TIME_RIGHT, raw_right)
-        if x2 <= x1:
-            return
-        self.rounded((x1, y, x2, y + 22), pale)
-        if window.used_percent is not None:
-            used_end = min(
-                x2,
-                max(
-                    x1,
-                    raw_left
-                    + (raw_right - raw_left) * min(window.used_percent, 100) / 100,
-                ),
+
+    def clamp(self, x: float) -> float:
+        return min(self.x1, max(self.x0, x))
+
+
+def week_axis(rows: list[ChannelQuota], now: float) -> Axis:
+    """Whole local days covering every live weekly window and today."""
+    stamps = [now]
+    for row in rows:
+        window = row.weekly
+        if window and window.reset_at is not None and window.reset_at > now:
+            stamps += [window.start_at, window.reset_at]
+    start = day_start(min(stamps))
+    end = day_start(max(stamps)) + DAY
+    return Axis(start, max(end, start + 8 * DAY), WEEK_X0, WEEK_X1)
+
+
+def five_axis(now: float) -> Axis:
+    """Five hours either side of now: every live 5h window fits."""
+    return Axis(now - 5 * HOUR, now + 5 * HOUR, FIVE_X0, FIVE_X1)
+
+
+def card_axis(rows: list[ChannelQuota], now: float) -> Axis:
+    """Whole local days from today (or the oldest listed card) to the last one."""
+    stamps = [s for row in rows for pool in row.reset_pools for s in pool.expires_at]
+    start = day_start(min(stamps + [now]))
+    end = max(day_start(max(stamps + [now])) + DAY, start + 14 * DAY)
+    return Axis(start, end, CARD_X0, CARD_X1)
+
+
+def draw_name(p: Painter, cy: float, row: ChannelQuota):
+    enabled = row.status == "启用"
+    p.circle(LEFT + 4, cy, 4, 0xFF2F9E6E if enabled else MUTED)
+    tag = p.measure("限流", 11, "bold") + 12 if row.limit_note else 0
+    name = p.fit(row.name, NAME_W - 22 - tag, 15, "bold")
+    width = p.text(LEFT + 16, cy, name, 15, INK if enabled else SUB, "bold")
+    if tag:
+        x = LEFT + 22 + width
+        p.rect(x, cy - 9, x + tag, cy + 9, OVER, 9)
+        p.text(x + tag / 2, cy, "限流", 11, PANEL, "bold", "center")
+    provider = "智谱" if row.provider.startswith("智谱") else row.provider
+    parts = [f"#{row.channel_id}", f"{provider} {row.plan}".strip()]
+    if not enabled:
+        parts.append(row.status)
+    p.text(LEFT + 16, cy + 19, p.fit(" · ".join(parts), NAME_W - 16, 12), 12, SUB)
+
+
+def window_bar(
+    p: Painter,
+    window: QuotaWindow | None,
+    cy: float,
+    axis: Axis,
+    now: float,
+    used_color: int,
+    pale: int,
+):
+    if window is None or window.reset_at is None or window.reset_at <= now:
+        return
+    raw0, raw1 = axis.x(window.start_at), axis.x(window.reset_at)
+    x0, x1 = axis.clamp(raw0), axis.clamp(raw1)
+    if x1 - x0 < 1:
+        return
+    top, bottom, radius = cy - BAR_H / 2, cy + BAR_H / 2, BAR_H / 2
+    p.rect(x0, top, x1, bottom, pale, radius)
+    if not window.used_percent:
+        return
+    used = raw0 + (raw1 - raw0) * min(window.used_percent, 100) / 100
+    now_x = axis.x(now)
+    p.canvas.save()
+    p.canvas.clipRRect(p.rrect(x0, top, x1, bottom, radius), doAntiAlias=True)
+    p.rect(x0, top, min(used, now_x), bottom, used_color)
+    if used > now_x:
+        p.rect(now_x, top, used, bottom, OVER)
+    p.canvas.restore()
+
+
+def value_cell(p: Painter, right: float, cy: float, window: QuotaWindow | None, now):
+    if window is None:
+        p.text(right, cy, "—", 14, MUTED, "bold", "right")
+        return
+    if window.used_percent is None:
+        p.text(right, cy - 7, "?", 14, MUTED, "bold", "right")
+    else:
+        left = max(0.0, 100 - window.used_percent)
+        color = OVER if left < 10 else INK
+        p.text(right, cy - 7, percent_text(left), 14, color, "bold", "right")
+    if window.reset_at is None:
+        countdown = "未开始" if window.used_percent == 0 else "—"
+    elif window.reset_at <= now:
+        countdown = "待刷新"
+    else:
+        countdown = duration_text(window.reset_at - now)
+    p.text(right, cy + 9, countdown, 11, SUB, "regular", "right")
+
+
+def week_head(p: Painter, axis: Axis, cy: float, top: float, bottom: float, now):
+    days = round((axis.end - axis.start) / DAY)
+    today = round((day_start(now) - axis.start) / DAY)
+    width = (axis.x1 - axis.x0) / days
+    p.rect(axis.x0 + today * width, top, axis.x0 + (today + 1) * width, bottom, TODAY)
+    step = ceil(44 / width)  # room for one MM/DD label
+    for day in range(days + 1):
+        x = axis.x0 + day * width
+        labelled = (day - today) % step == 0
+        if width >= 12 or labelled:
+            p.line(x, top, x, bottom, GRID)
+        if day < days and labelled:
+            label = (
+                "今天" if day == today else date_text(axis.start + day * DAY, "%m/%d")
             )
-            if used_end > x1:
-                mask = Image.new("L", (TIME_RIGHT - TIME_LEFT + 1, 23))
-                draw = ImageDraw.Draw(mask)
-                draw.rounded_rectangle(
-                    (x1 - TIME_LEFT, 0, x2 - TIME_LEFT, 22), radius=8, fill=255
-                )
-                draw.rectangle(
-                    (used_end - TIME_LEFT, 0, TIME_RIGHT - TIME_LEFT + 1, 23), fill=0
-                )
-                self.image.paste(color, (TIME_LEFT, y), mask)
-        x = self.pos(now, origin, duration)
-        if TIME_LEFT <= x <= TIME_RIGHT:
-            self.draw.line((x, y - 3, x, y + 25), fill=ORANGE, width=3)
+            p.text(x + width / 2, cy, label, 11, SUB, "regular", "center")
 
 
-def card_events(pool: ResetPool, now: float) -> list[tuple[float, str, str]]:
-    """Group simultaneous expiries without filtering dates."""
-    events = []
-    for stamp, count in sorted(Counter(pool.expires_at).items()):
-        label = f"x{count}"
-        events.append((stamp, label, ERROR if stamp - now < DAY else ORANGE))
-    return events
+def five_head(p: Painter, axis: Axis, cy: float, top: float, bottom: float):
+    hour = ceil(axis.start / HOUR) * HOUR
+    while hour <= axis.end:
+        x = axis.x(hour)
+        p.line(x, top, x, bottom, GRID)
+        p.line(x, top, x, top + 4, MUTED)
+        if round(hour / HOUR) % 2 == 0:
+            label = date_text(hour, "%H:00")
+            if axis.x0 + 14 <= x <= axis.x1 - 14:
+                p.text(x, cy, label, 11, SUB, "regular", "center")
+        hour += HOUR
+
+
+def now_line(p: Painter, axis: Axis, top: float, bottom: float, now: float):
+    x = axis.x(now)
+    if axis.x0 <= x <= axis.x1:
+        p.line(x, top, x, bottom, NOW, 1.5)
+        cap = skia.Path()
+        cap.moveTo(x - 4, top - 5)
+        cap.lineTo(x + 4, top - 5)
+        cap.lineTo(x, top)
+        cap.close()
+        p.canvas.drawPath(cap, skia.Paint(AntiAlias=True, Color=NOW))
+
+
+def pool_label(pool: ResetPool) -> str:
+    if pool.label.startswith("周"):
+        return "周"
+    if pool.label.startswith("5h"):
+        return "5h"
+    return ""
+
+
+def card_cell(p: Painter, cy: float, row: ChannelQuota, axis: Axis, now):
+    """Count per card type, then expiry chips on the shared card axis."""
+    if row.reset_note and not any(pool.count for pool in row.reset_pools):
+        x = min(axis.clamp(axis.x(now)) + 8, RIGHT - 80)
+        p.text(x, cy, p.fit(row.reset_note, RIGHT - x, 12), 12, OVER)
+        return
+    pools = row.reset_pools
+    days = round((axis.end - axis.start) / DAY)
+    day_w = (axis.x1 - axis.x0) / days
+    bin_days = max(1, ceil(CHIP_GAP / day_w))
+    now_x = axis.x(now)
+    for index, pool in enumerate(pools):
+        offset = 0 if len(pools) == 1 else (-LANE_DY if index == 0 else LANE_DY)
+        y = cy + offset
+        if len(pools) > 1:
+            p.text(CARD_LABEL, y, pool_label(pool), 11, MUTED)
+        count = "?" if pool.count is None else str(pool.count)
+        color = INK if pool.count else MUTED
+        p.text(CARD_VALUE, y, count, 13, color, "bold", "right")
+        bins = card_bins(pool, axis.start, bin_days)
+        if not bins:
+            continue
+        span = bin_days * day_w
+        chips = [(axis.x0 + (i + 0.5) * span, n, soonest) for i, n, soonest in bins]
+        p.line(min(now_x, chips[0][0]), y, chips[-1][0], y, CARD_LANE, 2)
+        for x, n, soonest in chips:
+            left = soonest - now
+            color = OVER if left < DAY else WARN if left < 3 * DAY else CARD
+            radius = 6.5 if n > 1 else 4
+            p.circle(x, y, radius + 1.5, PANEL)
+            p.circle(x, y, radius, color)
+            if n > 1:
+                p.text(x, y, str(n), 9, PANEL, "bold", "center")
+            if 0 < left < DAY:
+                # Away from the other lane: above the top one, below the bottom.
+                ly = y + (radius + 6) * (1 if offset > 0 else -1)
+                p.text(x, ly, duration_text(left), 9.5, OVER, "bold", "center")
 
 
 def render_quota(
     rows: list[ChannelQuota], output: Path, now: float, font_path: Path | None = None
 ) -> None:
-    """Omit unsupported channels and collect failures in a compact footer."""
+    """One line per supported channel; unsupported channel types are left out."""
     supported = [row for row in rows if not row.unsupported]
     visible = [row for row in supported if not row.issue]
-    errors = [
-        f"#{row.channel_id} {row.name}：{row.issue}" for row in supported if row.issue
-    ]
-    errors.extend(
-        f"#{row.channel_id} {row.name}：{row.reset_note}"
-        for row in visible
-        if row.reset_note
-    )
-    # Include weekly windows and available-card expiries, excluding usage history.
-    stamps = [now - 7 * DAY, now + 14 * DAY]
-    for row in visible:
-        if row.weekly and row.weekly.reset_at is not None:
-            stamps.extend((row.weekly.start_at, row.weekly.reset_at))
-        for pool in row.reset_pools:
-            stamps.extend(pool.expires_at)
-    # Round to local calendar days and limit tick density, not the data range.
-    offset = 8 * 3600
-    origin = floor((min(stamps) + offset) / DAY) * DAY - offset
-    end = ceil((max(stamps) + offset) / DAY) * DAY - offset
-    duration = end - origin
-    total_days = round(duration / DAY)
-    tick_step = max(1, ceil(total_days / 6))
-    tick_days = list(range(0, total_days + 1, tick_step))
-    if total_days - tick_days[-1] >= tick_step / 2:
-        tick_days.append(total_days)
-    # Keep one baseline per card pool; only labels move above or below it.
-    measure = _load_font(15, font_path)
+    failed = [row for row in supported if row.issue]
+    body = len(supported) * ROW_H or 64
+    height = MARGIN + TITLE_H + HEAD_H + body + 8 + MARGIN
+    if height > 20000:
+        raise ValueError("渠道过多，单张额度图片过高")
+    p = Painter(WIDTH, height, font_path)
 
-    def event_layout(pool):
-        lanes: list[list[tuple[float, float]]] = [[], []]
-        placed = []
-        for index, (stamp, label, color) in enumerate(card_events(pool, now)):
-            x = TIME_LEFT + (stamp - origin) / duration * (TIME_RIGHT - TIME_LEFT)
-            width = measure.getlength(label)
-            label_x = max(TIME_LEFT, min(TIME_RIGHT - width, x - width / 2))
-            bounds = (label_x, label_x + width)
-            lane = index % 2
-            # Dense clusters get extra label tiers, never extra timeline lines.
-            while lane < len(lanes) and any(
-                bounds[1] + 10 > left and bounds[0] < right + 10
-                for left, right in lanes[lane]
-            ):
-                lane += 2
-            while lane >= len(lanes):
-                lanes.append([])
-            lanes[lane].append(bounds)
-            placed.append((lane, x, label_x, label, color))
-        above = max((lane // 2 + 1 for lane, *_ in placed if lane % 2 == 0), default=0)
-        below = max((lane // 2 + 1 for lane, *_ in placed if lane % 2 == 1), default=0)
-        baseline = above * 22 + 4
-        return placed, max(42, baseline + below * 22 + 14), baseline
+    # Title and the one legend the bars need.
+    title_y = MARGIN + 22
+    width = p.text(MARGIN + 4, title_y, "订阅额度", 24, INK, "bold")
+    p.text(MARGIN + 18 + width, title_y + 2, date_text(now), 14, SUB)
+    x = WIDTH - MARGIN - 4
+    for label, kind, color in (
+        ("现在", "line", NOW),
+        ("超出进度", "box", OVER),
+        ("已用", "box", WEEK),
+        ("剩余", "box", WEEK_PALE),
+    ):
+        x -= p.measure(label, 12)
+        p.text(x, title_y + 2, label, 12, SUB)
+        if kind == "line":
+            p.line(x - 8, title_y - 5, x - 8, title_y + 9, color, 1.5)
+            x -= 30
+        else:
+            p.rect(x - 20, title_y - 3, x - 6, title_y + 7, color, 3)
+            x -= 36
 
-    layouts = []
+    top = MARGIN + TITLE_H
+    p.rect(MARGIN, top, WIDTH - MARGIN, height - MARGIN, PANEL, 14)
+    head = top + HEAD_H / 2 + 1
+    rows_top = top + HEAD_H
+    rows_bottom = rows_top + len(visible) * ROW_H
+    week, five = week_axis(visible, now), five_axis(now)
+    cards = card_axis(visible, now)
+    p.text(WEEK_VALUE, head, "周", 12, SUB, "bold", "right")
+    p.text(FIVE_VALUE, head, "5h", 12, SUB, "bold", "right")
+    p.text(CARD_VALUE, head, "重置卡", 12, SUB, "bold", "right")
+    if visible:
+        week_head(p, week, head, rows_top, rows_bottom, now)
+        five_head(p, five, head, rows_top, rows_bottom)
+        week_head(p, cards, head, rows_top, rows_bottom, now)
+    y = rows_top
     for row in visible:
-        windows = [
-            window for window in (row.weekly, row.five_hour) if window is not None
-        ]
-        pools = list(row.reset_pools)
-        if not pools and row.reset_count is not None:
-            pools = [ResetPool("重置卡", row.reset_count)]
-        pool_layouts = [event_layout(pool) for pool in pools]
-        window_heights = [38 for window in windows]
-        height = max(
-            108, 28 + sum(window_heights) + sum(item[1] for item in pool_layouts)
+        p.line(LEFT, y, RIGHT, y, RULE)
+        cy = y + ROW_H / 2
+        draw_name(p, cy - 9, row)
+        value_cell(p, WEEK_VALUE, cy, row.weekly, now)
+        value_cell(p, FIVE_VALUE, cy, row.five_hour, now)
+        window_bar(p, row.weekly, cy, week, now, WEEK, WEEK_PALE)
+        window_bar(p, row.five_hour, cy, five, now, FIVE, FIVE_PALE)
+        card_cell(p, cy, row, cards, now)
+        y += ROW_H
+    if visible:
+        for axis in (week, five, cards):
+            now_line(p, axis, rows_top, rows_bottom, now)
+    for row in failed:
+        p.line(LEFT, y, RIGHT, y, RULE)
+        draw_name(p, y + ROW_H / 2 - 9, row)
+        x = LEFT + NAME_W + 16
+        p.text(x, y + ROW_H / 2, p.fit(row.issue, RIGHT - x, 13), 13, OVER)
+        y += ROW_H
+    if not supported:
+        p.text(
+            WIDTH / 2, y + 32, "暂无可展示的订阅额度", 15, MUTED, "regular", "center"
         )
-        layouts.append((row, windows, window_heights, pools, pool_layouts, height))
-    height = (
-        136
-        + sum(item[-1] for item in layouts)
-        + (52 + 28 * len(errors) if errors else 0)
-        + 42
-    )
-    if not visible:
-        height += 60
-    if WIDTH * height > 60_000_000:
-        raise ValueError("渠道过多，单张额度图片超过 6000 万像素")
-    c = QuotaCanvas(height, font_path)
-    c.text((LEFT + 20, 24), "订阅额度", 28)
-    c.text((LEFT + 164, 32), date_text(now) + " · UTC+8", 17, MUTED)
-    c.text(
-        (TIME_LEFT, 28),
-        "深色 = 已用    浅色 = 剩余    橙线 = 现在    ◆ 到期",
-        17,
-        MUTED,
-    )
-    c.text((LEFT + 20, 92), "渠道 / 套餐", 17, MUTED)
-    c.text((390, 92), "额度余量 / 重置卡", 17, MUTED)
-    for day in tick_days:
-        x = c.pos(origin + day * DAY, origin, duration)
-        label = date_text(origin + day * DAY, "%m/%d")
-        c.text((x - c.fonts[16].getlength(label) / 2, 93), label, 16, MUTED)
-    now_x = c.pos(now, origin, duration)
-    c.text((now_x - 16, 68), "现在", 16, ORANGE)
-    y = 128
-    if not visible:
-        c.text((LEFT + 20, y + 20), "暂无可展示的订阅额度", 20, MUTED)
-        y += 60
-    for row, windows, window_heights, pools, pool_layouts, row_height in layouts:
-        c.draw.line((LEFT + 20, y, RIGHT - 20, y), fill=LINE)
-        c.text((LEFT + 20, y + 19), c.fit(row.name, 310, 22), 22)
-        meta = f"#{row.channel_id} · {row.provider} · {row.plan}"
-        c.text((LEFT + 20, y + 51), c.fit(meta, 310, 16), 16, MUTED)
-        status = row.status + (" · " + row.limit_note if row.limit_note else "")
-        c.text(
-            (LEFT + 20, y + 77),
-            c.fit(status, 310, 16),
-            16,
-            ERROR if row.limit_note else MUTED,
-        )
-        line_y = y + 18
-        for window, line_height in zip(windows, window_heights):
-            five = window is row.five_hour
-            color, pale = (TEAL, TEAL_PALE) if five else (PURPLE, PALE)
-            c.text((390, line_y + 2), "5 小时" if five else "周限额", 18, color)
-            remaining = (
-                max(0, 100 - window.used_percent)
-                if window.used_percent is not None
-                else None
-            )
-            value = (
-                (f"{remaining:.1f}".rstrip("0").rstrip(".") + "%")
-                if remaining is not None
-                else "未知"
-            )
-            c.text(
-                (475, line_y),
-                value,
-                22,
-                ERROR if remaining is not None and remaining <= 10 else INK,
-            )
-            c.text((561, line_y + 4), "剩余", 16, MUTED)
-            c.text(
-                (617, line_y + 4),
-                c.fit(countdown(window.reset_at, now), 245, 16),
-                16,
-                MUTED,
-            )
-            if five:
-                # Five-hour rows share a relative scale centered on now.
-                local_origin = now - 5 * 3600
-                c.window_bar(window, line_y, now, local_origin, 10 * 3600, color, pale)
-            else:
-                for day in tick_days:
-                    x = c.pos(origin + day * DAY, origin, duration)
-                    c.draw.line((x, line_y - 2, x, line_y + 25), fill=LINE)
-                c.window_bar(window, line_y, now, origin, duration, color, pale)
-            line_y += line_height
-        for pool, (events, pool_height, baseline) in zip(pools, pool_layouts):
-            c.text((390, line_y + 3), pool.label, 17, MUTED)
-            c.text(
-                (510, line_y + 1),
-                f"{pool.count} 张可用" if pool.count is not None else "数量未知",
-                18,
-            )
-            if events:
-                event_y = line_y + baseline
-                c.draw.line((TIME_LEFT, event_y, TIME_RIGHT, event_y), fill=LINE)
-                c.draw.line(
-                    (now_x, event_y - 8, now_x, event_y + 8), fill=ORANGE, width=2
-                )
-                for lane, x, label_x, label, color in events:
-                    label_y = (
-                        event_y - 22 * (lane // 2 + 1)
-                        if lane % 2 == 0
-                        else event_y + 9 + 22 * (lane // 2)
-                    )
-                    if lane >= 2:
-                        connector_y = label_y + 17 if lane % 2 == 0 else label_y - 2
-                        c.draw.line((x, event_y, x, connector_y), fill=LINE)
-                    c.draw.polygon(
-                        (
-                            (x, event_y - 5),
-                            (x + 5, event_y),
-                            (x, event_y + 5),
-                            (x - 5, event_y),
-                        ),
-                        fill=color,
-                    )
-                    c.text((label_x, label_y), label, 15, color)
-            elif not pool.expires_at:
-                text = "暂无可用重置卡" if pool.count == 0 else "上游未提供有效期明细"
-                c.text((TIME_LEFT, line_y + 4), text, 16, MUTED)
-            line_y += pool_height
-        y += row_height
-    if errors:
-        c.draw.line((LEFT + 20, y, RIGHT - 20, y), fill=LINE)
-        c.text((LEFT + 20, y + 16), "查询异常", 17, ERROR)
-        y += 48
-        for error in errors:
-            c.text((LEFT + 20, y), c.fit(error, WIDTH - 2 * LEFT - 40, 16), 16, ERROR)
-            y += 28
-    c.text(
-        (LEFT + 20, y + 12),
-        "周窗口与重置卡共用日期轴；5 小时窗口使用独立小时轴。窗口起点按周期推算，查询不会消耗重置卡。",
-        15,
-        MUTED,
-    )
-    output.parent.mkdir(parents=True, exist_ok=True)
-    c.image.crop((LEFT, 12, RIGHT, min(height, y + 46))).save(
-        output, "PNG", optimize=True
-    )
+    p.save(output)
