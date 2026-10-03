@@ -6,6 +6,7 @@ import asyncio
 import re
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from math import isfinite
 from typing import Any
 
@@ -30,6 +31,14 @@ class QuotaWindow:
 
 
 @dataclass(frozen=True)
+class ResetPool:
+    label: str
+    count: int | None
+    expires_at: tuple[float, ...] = ()
+    last_used_at: float | None = None
+
+
+@dataclass(frozen=True)
 class ChannelQuota:
     channel_id: int
     name: str
@@ -44,6 +53,7 @@ class ChannelQuota:
     # Per-window reset-card counts, e.g. (("5 小时", 5), ("每周", 5)). Rendered
     # instead of the merged reset_count so the two pools stay distinguishable.
     reset_breakdown: tuple[tuple[str, int], ...] = ()
+    reset_pools: tuple[ResetPool, ...] = ()
     issue: str = ""
     unsupported: bool = False
     limit_note: str = ""
@@ -128,6 +138,21 @@ def parse_window(
     return QuotaWindow(label, used, duration, reset, detail)
 
 
+def reset_timestamp(value: Any, *, milliseconds: bool = False) -> float | None:
+    """Accept provider ISO dates or Unix timestamps, excluding invalid dates."""
+    stamp = number(value)
+    if stamp is not None and milliseconds:
+        stamp /= 1000
+    if stamp is None and isinstance(value, str):
+        try:
+            date = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if date.tzinfo is not None:
+                stamp = date.timestamp()
+        except (ValueError, OverflowError, OSError):
+            pass
+    return stamp if stamp is not None and 0 < stamp < 253402214400 else None
+
+
 def normalize_quota(
     channel: dict, usage: object, credits: object, now: float
 ) -> ChannelQuota:
@@ -147,6 +172,7 @@ def normalize_quota(
             **common, unsupported=True, issue="暂不支持此渠道类型的订阅额度查询"
         )
     count = None
+    pools: list[ResetPool] = []
     reset_note = "上游未提供主动重置次数" if kind == "zhipu" else "未返回重置次数"
     reset_breakdown: tuple[tuple[str, int], ...] = ()
     if kind == "zhipu":
@@ -157,15 +183,41 @@ def normalize_quota(
             if isinstance(five_hour, list) and isinstance(week, list):
                 count = len(five_hour) + len(week)
                 reset_note = ""
+                for label, cards, history_key in (
+                    ("周重置卡", week, "latest_week_reset_history"),
+                    ("5h 重置卡", five_hour, "latest_five_hour_reset_history"),
+                ):
+                    history = reset.get(history_key)
+                    used_at = (
+                        history.get("used_at") if isinstance(history, dict) else None
+                    )
+                    pools.append(
+                        ResetPool(
+                            label,
+                            len(cards),
+                            tuple(
+                                sorted(
+                                    stamp
+                                    for card in cards
+                                    if isinstance(card, dict)
+                                    if (
+                                        stamp := reset_timestamp(
+                                            card.get("expire_at"), milliseconds=True
+                                        )
+                                    )
+                                    is not None
+                                )
+                            ),
+                            reset_timestamp(used_at, milliseconds=True),
+                        )
+                    )
                 reset_breakdown = (
                     ("5 小时", len(five_hour)),
                     ("每周", len(week)),
                 )
         elif isinstance(usage, dict):
-            reason = str(
-                usage.get("reset_unavailable_reason") or ""
-            ).strip()
-            reset_note = "重置卡查询失败：" + (reason or "未知原因")
+            reason = str(usage.get("reset_unavailable_reason") or "").strip()
+            reset_note = "重置卡查询失败：" + issue_text(reason or "未知原因")
     if kind == "codex":
         embedded = (
             usage.get("rate_limit_reset_credits") if isinstance(usage, dict) else None
@@ -176,6 +228,28 @@ def normalize_quota(
         if count_value is None:
             count_value = number(embedded.get("available_count"))
         count = int(count_value) if count_value is not None else None
+        raw_cards = credit_data.get("credits")
+        cards = (
+            [card for card in raw_cards if isinstance(card, dict)]
+            if isinstance(raw_cards, list)
+            else []
+        )
+        expiry = tuple(
+            sorted(
+                stamp
+                for card in cards
+                if str(card.get("status", "")).lower() == "available"
+                if (stamp := reset_timestamp(card.get("expires_at"))) is not None
+            )
+        )
+        redeemed = [
+            stamp
+            for card in cards
+            if (stamp := reset_timestamp(card.get("redeemed_at"))) is not None
+        ]
+        pools.append(
+            ResetPool("全额重置卡", count, expiry, max(redeemed) if redeemed else None)
+        )
         if isinstance(credits, Exception):
             reset_note = (
                 "使用用量接口返回的次数；" if count is not None else ""
@@ -187,6 +261,7 @@ def normalize_quota(
         reset_note=reset_note,
         reset_failed=isinstance(credits, Exception),
         reset_breakdown=reset_breakdown,
+        reset_pools=tuple(pools),
     )
     if isinstance(usage, Exception):
         return ChannelQuota(**common, issue=issue_text(usage))
