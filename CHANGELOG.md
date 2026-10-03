@@ -1,5 +1,12 @@
 # 更新日志
 
+## 1.6.0 - 2026-10-04
+
+- `/newapi quota` 额度图重新设计。
+- `/newapi flow` 流图改进。
+- 额度图与流图改用 Skia（`skia-python`）绘制，移除 Pillow 依赖；优先使用 Noto Sans CJK SC 的 Regular / Bold 字重。
+- **部署变更**：`skia-python` 在 Linux 上依赖系统库 `libEGL.so.1` 与 `libGL.so.1`，`python:*-slim` 等精简镜像需安装 `libegl1` 与 `libgl1`。
+
 ## 1.5.3 - 2026-09-28
 
 - `newapi flow` 时间范围不再有上限，配合 new-api 解除 30 天查询限制后可统计任意历史区间（Sankey 节点数与时间范围无关，图片复杂度不受影响）。
