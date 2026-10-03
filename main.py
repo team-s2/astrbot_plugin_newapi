@@ -396,6 +396,8 @@ class NewApiPlugin(star.Star):
             rows = await instance.client.flow(
                 end_timestamp - range_seconds, end_timestamp
             )
+            # Channel tests are logged without a token, so token_id is 0 (omitted).
+            rows = [row for row in rows if row.get("token_id")]
             if not rows:
                 raise NewApiError("所选时间范围内没有流图数据")
 
