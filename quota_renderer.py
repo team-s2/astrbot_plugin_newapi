@@ -4,7 +4,8 @@ One line per channel. The weekly window sits on a date axis and the 5h window
 on an hour axis, each drawn where it falls in time with dark = used and
 light = remaining; an orange line marks now, and used quota past it is ahead
 of pace and turns red. Reset cards get a third, narrow date axis at the end of
-the row, one thin lane per card type.
+the row, one thin lane per card type; Grok, which has none, shows its monthly
+dollar allowance there instead.
 """
 
 from __future__ import annotations
@@ -151,7 +152,9 @@ def draw_name(p: Painter, cy: float, row: ChannelQuota):
         p.rect(x, cy - 9, x + tag, cy + 9, OVER, 9)
         p.text(x + tag / 2, cy, "限流", 11, PANEL, "bold", "center")
     provider = "智谱" if row.provider.startswith("智谱") else row.provider
-    parts = [f"#{row.channel_id}", f"{provider} {row.plan}".strip()]
+    # "SuperGrok" already names its provider.
+    plan = row.plan if provider in row.plan else f"{provider} {row.plan}".strip()
+    parts = [f"#{row.channel_id}", plan]
     if not enabled:
         parts.append(row.status)
     p.text(LEFT + 16, cy + 19, p.fit(" · ".join(parts), NAME_W - 16, 12), 12, SUB)
@@ -256,6 +259,33 @@ def pool_label(pool: ResetPool) -> str:
     return ""
 
 
+def monthly_cell(p: Painter, cy: float, row: ChannelQuota, now):
+    """Grok's monthly allowance: remaining share, then spend and countdown."""
+    window = row.monthly
+    if window is None:
+        p.text(CARD_LABEL, cy, p.fit(row.reset_note or "—", RIGHT - CARD_LABEL, 12),
+               12, OVER if row.reset_note else MUTED)
+        return
+    x = CARD_LABEL + p.text(CARD_LABEL, cy - 7, "月", 11, MUTED) + 6
+    if window.used_percent is None:
+        x += p.text(x, cy - 7, "?", 14, MUTED, "bold")
+    else:
+        left = max(0.0, 100 - window.used_percent)
+        color = OVER if left < 10 else INK
+        x += p.text(x, cy - 7, percent_text(left), 14, color, "bold")
+    if row.reset_note:
+        x += 10
+        p.text(x, cy - 7, p.fit(row.reset_note, RIGHT - x, 11), 11, OVER)
+    parts = [window.detail] if window.detail else []
+    if window.reset_at is not None:
+        parts.append(
+            "待刷新" if window.reset_at <= now else duration_text(window.reset_at - now)
+        )
+    if parts:
+        line = p.fit(" · ".join(parts), RIGHT - CARD_LABEL, 11)
+        p.text(CARD_LABEL, cy + 9, line, 11, SUB)
+
+
 def card_cell(p: Painter, cy: float, row: ChannelQuota, axis: Axis, now):
     """Count per card type, then expiry chips on the shared card axis."""
     if row.reset_note and not any(pool.count for pool in row.reset_pools):
@@ -351,11 +381,22 @@ def render_quota(
         value_cell(p, FIVE_VALUE, cy, row.five_hour, now)
         window_bar(p, row.weekly, cy, week, now, WEEK, WEEK_PALE)
         window_bar(p, row.five_hour, cy, five, now, FIVE, FIVE_PALE)
-        card_cell(p, cy, row, cards, now)
+        if row.provider != "Grok":
+            card_cell(p, cy, row, cards, now)
         y += ROW_H
     if visible:
         for axis in (week, five, cards):
             now_line(p, axis, rows_top, rows_bottom, now)
+    # Grok rows don't use the card axis: blank out its grid and now line first.
+    for index, row in enumerate(visible):
+        if row.provider == "Grok":
+            row_top = rows_top + index * ROW_H
+            row_bottom = row_top + ROW_H
+            p.rect(CARD_LABEL - 6, row_top - 1, RIGHT, row_bottom + 1, PANEL)
+            p.line(CARD_LABEL - 6, row_top, RIGHT, row_top, RULE)
+            if row_bottom < rows_bottom or failed:
+                p.line(CARD_LABEL - 6, row_bottom, RIGHT, row_bottom, RULE)
+            monthly_cell(p, row_top + ROW_H / 2, row, now)
     for row in failed:
         p.line(LEFT, y, RIGHT, y, RULE)
         draw_name(p, y + ROW_H / 2 - 9, row)

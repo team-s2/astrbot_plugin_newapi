@@ -47,6 +47,9 @@ class ChannelQuota:
     plan: str = ""
     weekly: QuotaWindow | None = None
     five_hour: QuotaWindow | None = None
+    # Grok only: the dollar-denominated subscription allowance, shown in place
+    # of reset cards (Grok has neither a 5h window nor reset cards).
+    monthly: QuotaWindow | None = None
     reset_count: int | None = None
     reset_note: str = ""
     reset_failed: bool = False
@@ -68,6 +71,8 @@ def account_kind(channel: dict[str, Any]) -> str | None:
         and str(channel.get("base_url") or "").strip() == "glm-coding-plan"
     ):
         return "zhipu"
+    if channel_type == 101:
+        return "grok"
     return None
 
 
@@ -160,7 +165,11 @@ def normalize_quota(
     common = {
         "channel_id": int(channel["id"]),
         "name": str(channel.get("name") or "未命名"),
-        "provider": {"codex": "Codex", "zhipu": "智谱 Coding Plan"}.get(
+        "provider": {
+            "codex": "Codex",
+            "zhipu": "智谱 Coding Plan",
+            "grok": "Grok",
+        }.get(
             kind, f"类型 {channel.get('type', '?')}"
         ),
         "status": {1: "启用", 2: "手动禁用", 3: "自动禁用"}.get(
@@ -171,6 +180,8 @@ def normalize_quota(
         return ChannelQuota(
             **common, unsupported=True, issue="暂不支持此渠道类型的订阅额度查询"
         )
+    if kind == "grok":
+        return normalize_grok(common, usage)
     count = None
     pools: list[ResetPool] = []
     reset_note = "上游未提供主动重置次数" if kind == "zhipu" else "未返回重置次数"
@@ -295,6 +306,50 @@ def normalize_quota(
     )
 
 
+def money_text(value: float) -> str:
+    return f"${value:,.0f}" if value == int(value) else f"${value:,.2f}"
+
+
+def grok_window(
+    raw: Any, label: str, duration: float, percent_key: str
+) -> QuotaWindow | None:
+    """A Grok billing window: ISO period bounds plus a utilization percent."""
+    if not isinstance(raw, dict) or not raw:
+        return None
+    start = reset_timestamp(raw.get("period_start"))
+    reset = reset_timestamp(raw.get("period_end"))
+    if start is not None and reset is not None and reset > start:
+        duration = reset - start
+    detail = ""
+    limit, used = number(raw.get("monthly_limit")), number(raw.get("monthly_used"))
+    if used is not None:
+        detail = money_text(used) + (f" / {money_text(limit)}" if limit else "")
+    return QuotaWindow(label, number(raw.get(percent_key)), duration, reset, detail)
+
+
+def normalize_grok(common: dict, usage: object) -> ChannelQuota:
+    if isinstance(usage, Exception):
+        return ChannelQuota(**common, issue=issue_text(usage))
+    if not isinstance(usage, dict):
+        return ChannelQuota(**common, issue="接口未返回有效额度数据")
+    weekly = grok_window(usage.get("weekly"), "周额度", WEEK, "usage_percent")
+    monthly = grok_window(usage.get("monthly"), "月额度", 30 * 86400, "used_percent")
+    failed = usage.get("failed_windows")
+    failed = failed if isinstance(failed, list) else []
+    names = {"weekly": "周额度", "monthly": "月额度"}
+    note = "、".join(names[name] for name in names if name in failed)
+    return ChannelQuota(
+        **common,
+        plan=str(usage.get("plan") or ""),
+        weekly=weekly,
+        monthly=monthly,
+        reset_note=f"{note}查询失败" if note else "",
+        issue="上游未返回周额度或月额度"
+        if weekly is None and monthly is None
+        else "",
+    )
+
+
 async def collect_quotas(client: NewApiClient) -> list[ChannelQuota]:
     """Fetch all channels with at most four concurrent upstream requests."""
     channels = await client.all_channels()
@@ -318,6 +373,8 @@ async def collect_quotas(client: NewApiClient) -> list[ChannelQuota]:
             )
         elif kind == "zhipu":
             usage = await request(client.zhipu_coding_plan_usage, channel_id)
+        elif kind == "grok":
+            usage = await request(client.grok_usage, channel_id)
         return normalize_quota(channel, usage, credits, time.time())
 
     rows = await asyncio.gather(*(fetch(channel) for channel in channels))

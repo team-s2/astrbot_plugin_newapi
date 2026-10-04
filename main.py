@@ -17,6 +17,7 @@ from astrbot.core.utils.astrbot_path import get_astrbot_temp_path
 
 from .account_info import (
     format_codex_account,
+    format_grok_account,
     format_token_count,
     format_zhipu_account,
 )
@@ -43,6 +44,7 @@ CHANNEL_TYPES = {
     57: "ChatGPT Subscription (Codex)",
     58: "Advanced Custom",
     100: "Zhipu Coding Plan",
+    101: "Grok Subscription",
 }
 CHANNEL_STATUSES = {0: "未知", 1: "启用", 2: "手动禁用", 3: "自动禁用"}
 FLOW_DURATION_UNITS = {"m": 60, "h": 3600, "d": 86400}
@@ -474,6 +476,12 @@ class NewApiPlugin(star.Star):
             except NewApiError as error:
                 usage = error
             return kind, usage, None
+        if kind == "grok":
+            try:
+                usage = await client.grok_usage(channel_id)
+            except NewApiError as error:
+                usage = error
+            return kind, usage, None
         return None
 
     @staticmethod
@@ -489,6 +497,8 @@ class NewApiPlugin(star.Star):
             return ["Account Info 查询失败：new-api 返回了无效数据"]
         if kind == "zhipu":
             return format_zhipu_account(usage)
+        if kind == "grok":
+            return format_grok_account(usage)
 
         credit_data = credits if isinstance(credits, dict) else None
         lines = format_codex_account(usage, credit_data)

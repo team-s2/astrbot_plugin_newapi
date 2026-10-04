@@ -1,6 +1,6 @@
 # astrbot_plugin_newapi
 
-用于在 AstrBot 中只读查询 [new-api](https://github.com/QuantumNous/new-api) 管理信息的插件。支持按会话绑定多个 new-api 实例、查看渠道、查询 Codex 与智谱 Coding Plan 订阅用量，以及将 Dashboard Flow 绘制成适合聊天发送的 Sankey 图。
+用于在 AstrBot 中只读查询 [new-api](https://github.com/QuantumNous/new-api) 管理信息的插件。支持按会话绑定多个 new-api 实例、查看渠道、查询 Codex、智谱 Coding Plan 与 Grok 订阅用量，以及将 Dashboard Flow 绘制成适合聊天发送的 Sankey 图。
 
 ## 命令
 
@@ -50,9 +50,9 @@ New-Api-User: <user_id>
 
 ## 额度图片
 
-`/newapi quota` 查询当前会话绑定实例的全部渠道，不受 `channel_list_limit` 限制。支持 Codex（类型 57）、智谱 Coding Plan（类型 100，以及类型 26 配合 `glm-coding-plan`）；不支持额度查询的渠道不显示。单个渠道认证失败、超时等不会中断其他渠道的展示，错误汇总在图片底部。
+`/newapi quota` 查询当前会话绑定实例的全部渠道，不受 `channel_list_limit` 限制。支持 Codex（类型 57）、智谱 Coding Plan（类型 100，以及类型 26 配合 `glm-coding-plan`）、Grok Subscription（类型 101）；不支持额度查询的渠道不显示。单个渠道认证失败、超时等不会中断其他渠道的展示，错误汇总在图片底部。
 
-图片按上游实际返回的窗口显示周限额、5 小时限额，每行并列显示剩余百分比和重置倒计时，不显示 token 计数；没有的窗口不占位。Codex 和智谱均支持此布局，Codex 附加限额（包括 Spark）不在此图中展示。深色表示已用额度，浅色表示剩余，橙线表示当前时间。周窗口与重置卡共用日期轴，5 小时窗口使用独立的相对小时轴，不显示下方刻度文字。窗口起点按重置时间减去周期推算，不代表历史请求分布。时间统一为 UTC+8；未知用量不视为 0，已到期窗口提示等待上游更新。
+图片按上游实际返回的窗口显示周限额、5 小时限额，每行并列显示剩余百分比和重置倒计时，不显示 token 计数；没有的窗口不占位。Codex 和智谱均支持此布局，Codex 附加限额（包括 Spark）不在此图中展示。Grok 没有 5 小时窗口和重置卡，周额度按上游返回的周期显示在周轴上，重置卡一列改为显示月度额度（剩余百分比、已用 / 套餐美元额度与重置倒计时）。深色表示已用额度，浅色表示剩余，橙线表示当前时间。周窗口与重置卡共用日期轴，5 小时窗口使用独立的相对小时轴，不显示下方刻度文字。窗口起点按重置时间减去周期推算，不代表历史请求分布。时间统一为 UTC+8；未知用量不视为 0，已到期窗口提示等待上游更新。
 
 主动重置卡仅显示可用张数与到期标记，已使用的重置卡记录不展示，也不参与时间轴范围计算。Codex 显示全额重置卡，智谱分别显示周重置卡和 5 小时重置卡。同一时刻到期的卡合并计数；菱形标记到期，24 小时内到期的卡用红色提醒。日期轴自动扩展以覆盖全部周窗口与可用重置卡到期时间，不按日期范围丢弃数据；卡片标记仅显示「xn」（如 x1、x4），每种重置卡共用一条时间线，标签在上下两侧交替显示，密集时仅增加文字层级以避免重叠。上游只返回张数时不推测有效期；独立重置卡接口失败时可回退到用量接口中的次数，错误显示在底部。查询不会消耗重置卡。
 
@@ -86,4 +86,4 @@ apt-get install -y --no-install-recommends libegl1 libgl1
 
 - Python 3.10+
 - 支持插件依赖自动安装的 AstrBot 版本
-- 需要包含 Dashboard Flow、Codex usage 和智谱 Coding Plan usage API 的 team-s2/new-api 版本
+- 需要包含 Dashboard Flow、Codex usage、智谱 Coding Plan usage 和 Grok usage API 的 team-s2/new-api 版本

@@ -231,3 +231,73 @@ def format_zhipu_account(usage: dict[str, Any]) -> list[str]:
             "重置卡查询失败：" + (reason or "未知原因，请检查渠道 OAuth 凭据")
         )
     return lines
+
+
+def _grok_money(value: Any) -> str | None:
+    amount = _number(value)
+    if amount is None:
+        return None
+    return f"${amount:,.0f}" if amount == int(amount) else f"${amount:,.2f}"
+
+
+def _grok_reset_text(window: dict[str, Any]) -> str:
+    try:
+        reset_at = datetime.fromisoformat(
+            str(window.get("period_end") or "").replace("Z", "+00:00")
+        )
+    except ValueError:
+        return "重置时间未知"
+    if reset_at.tzinfo is None:
+        return "重置时间未知"
+    return reset_at.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC") + " 重置"
+
+
+def format_grok_account(usage: dict[str, Any]) -> list[str]:
+    """Render the useful fields from a Grok Subscription usage response."""
+    lines = [f"套餐 {usage.get('plan') or '未知'}"]
+    weekly = usage.get("weekly")
+    if isinstance(weekly, dict) and weekly:
+        used = _number(weekly.get("usage_percent"))
+        usage_text = (
+            f"剩余 {max(100 - min(used, 100), 0):.1f}%" if used is not None else "用量未知"
+        )
+        lines.append(f"每周：{usage_text} · {_grok_reset_text(weekly)}")
+    products = usage.get("product_usage")
+    if isinstance(products, list):
+        parts = [
+            f"{item.get('product')} {percent:g}%"
+            for item in products
+            if isinstance(item, dict) and item.get("product")
+            if (percent := _number(item.get("usage_percent"))) is not None
+        ]
+        if parts:
+            lines.append("  按产品已用：" + " · ".join(parts))
+    monthly = usage.get("monthly")
+    if isinstance(monthly, dict) and monthly:
+        used_money = _grok_money(monthly.get("monthly_used"))
+        limit_money = _grok_money(monthly.get("monthly_limit"))
+        used = _number(monthly.get("used_percent"))
+        parts = []
+        if used_money:
+            parts.append(f"已用 {used_money}" + (f" / {limit_money}" if limit_money else ""))
+        if used is not None:
+            parts.append(f"剩余 {max(100 - min(used, 100), 0):.1f}%")
+        usage_text = "，".join(parts) or "用量未知"
+        lines.append(f"每月：{usage_text} · {_grok_reset_text(monthly)}")
+    on_demand_used = _grok_money(usage.get("on_demand_used"))
+    on_demand_cap = _grok_money(usage.get("on_demand_cap"))
+    if on_demand_used or on_demand_cap:
+        lines.append(
+            f"按需用量：{on_demand_used or '$0'}"
+            + (f" / 上限 {on_demand_cap}" if on_demand_cap else "")
+        )
+    prepaid = _grok_money(usage.get("prepaid_balance"))
+    if prepaid:
+        lines.append(f"预付余额：{prepaid}")
+    failed = usage.get("failed_windows")
+    if isinstance(failed, list):
+        names = {"weekly": "周额度", "monthly": "月额度"}
+        for name, label in names.items():
+            if name in failed:
+                lines.append(f"{label}查询失败")
+    return lines

@@ -221,6 +221,13 @@ class NewApiClient:
             raise NewApiError("new-api returned invalid Zhipu Coding Plan usage data")
         return data
 
+    async def grok_usage(self, channel_id: int) -> dict:
+        """Fetch Grok subscription weekly credits and monthly billing usage."""
+        data = await self.get(f"/api/channel/{channel_id}/grok/usage")
+        if not isinstance(data, dict):
+            raise NewApiError("new-api returned invalid Grok usage data")
+        return data
+
     async def flow(self, start_timestamp: int, end_timestamp: int) -> list[dict]:
         """Fetch dashboard flow rows.
 
