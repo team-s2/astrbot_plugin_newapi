@@ -1,5 +1,9 @@
 # 更新日志
 
+## 1.6.3 - 2026-10-05
+
+- `/newapi quota` 默认只显示已启用的渠道，已禁用渠道不再请求上游额度；`/newapi quota all` 显示全部渠道（即此前的行为）。
+
 ## 1.6.2 - 2026-10-05
 
 - 支持 Grok Subscription 渠道（类型 101），需要 new-api 提供 `/api/channel/:id/grok/usage` 接口。

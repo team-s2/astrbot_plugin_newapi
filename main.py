@@ -354,12 +354,18 @@ class NewApiPlugin(star.Star):
             yield event.plain_result(f"查询 new-api 失败：{error}")
 
     @newapi.command("quota")
-    async def quota(self, event: AstrMessageEvent):
-        """Send a quota image for every channel in the bound instance."""
+    async def quota(self, event: AstrMessageEvent, scope: str = ""):
+        """Send a quota image for the enabled channels, or all with ``all``."""
+        scope = scope.strip().lower()
+        if scope not in ("", "all"):
+            yield event.plain_result("用法：/newapi quota [all]")
+            return
         try:
             instance = self._instance_for(event)
             async with self._quota_render_lock:
-                rows = await collect_quotas(instance.client)
+                rows = await collect_quotas(
+                    instance.client, include_disabled=scope == "all"
+                )
                 now = time.time()
                 output = Path(get_astrbot_temp_path()) / f"newapi-quota-{uuid4().hex}.png"
                 event.track_temporary_local_file(str(output))
