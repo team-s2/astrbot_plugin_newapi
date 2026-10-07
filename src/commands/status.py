@@ -11,7 +11,7 @@ from astrbot.core.message.components import Image, Plain
 from ..api.client import NewApiError
 from ..config import NewApiBindingError
 from ..core.channels import CHANNEL_STATUSES, channel_has_group, channel_type_name
-from ..core.quota import collect_quotas
+from ..core.quota import collect_quotas, quota_version_label
 from .base import CommandBase
 
 
@@ -64,13 +64,18 @@ class StatusCommands(CommandBase):
                 return
 
             name = str(channel.get("name") or "未命名")
-            details = (
-                f"已{action}渠道 #{target_id}：{name}\n"
-                f"类型：{channel_type_name(channel)}\n"
-                f"分组：{channel.get('group') or 'default'}\n"
-                f"状态：{'启用' if enabled else '手动禁用'}"
+            rows = await collect_quotas(
+                instance.client, include_disabled=True, group=group
             )
-            rows = await collect_quotas(instance.client, group=group)
+            quota_row = next(
+                (row for row in rows if row.channel_id == target_id), None
+            )
+            version = (
+                quota_version_label(quota_row)
+                if quota_row
+                else channel_type_name(channel)
+            )
+            details = f"已{action}渠道 #{target_id}：{name} ({version})"
             output = await self._render_quota_image(event, rows, time.time())
             yield event.chain_result(
                 [Plain(details), Image.fromFileSystem(str(output))]

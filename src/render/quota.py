@@ -16,7 +16,7 @@ from pathlib import Path
 
 import skia
 
-from ..core.quota import ChannelQuota, QuotaWindow, ResetPool
+from ..core.quota import ChannelQuota, QuotaWindow, ResetPool, quota_version_label
 from .painter import UNIT_GAP, Painter
 
 TZ = timezone(timedelta(hours=8))
@@ -151,10 +151,7 @@ def draw_name(p: Painter, cy: float, row: ChannelQuota):
         x = LEFT + 22 + width
         p.rect(x, cy - 9, x + tag, cy + 9, OVER, 9)
         p.text(x + tag / 2, cy, "限流", 11, PANEL, "bold", "center")
-    provider = "智谱" if row.provider.startswith("智谱") else row.provider
-    # "SuperGrok" already names its provider.
-    plan = row.plan if provider in row.plan else f"{provider} {row.plan}".strip()
-    parts = [f"#{row.channel_id}", plan]
+    parts = [f"#{row.channel_id}", quota_version_label(row)]
     if not enabled:
         parts.append(row.status)
     p.text(LEFT + 16, cy + 19, p.fit(" · ".join(parts), NAME_W - 16, 12), 12, SUB)

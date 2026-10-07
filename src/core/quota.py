@@ -62,6 +62,12 @@ class ChannelQuota:
     limit_note: str = ""
 
 
+def quota_version_label(row: ChannelQuota) -> str:
+    """Return the provider and plan label used by the quota image."""
+    provider = "智谱" if row.provider.startswith("智谱") else row.provider
+    return row.plan if provider in row.plan else f"{provider} {row.plan}".strip()
+
+
 def account_kind(channel: dict[str, Any]) -> str | None:
     channel_type = int(channel.get("type") or 0)
     if channel_type == 57:
