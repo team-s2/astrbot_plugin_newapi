@@ -1,6 +1,6 @@
 # astrbot_plugin_newapi
 
-用于在 AstrBot 中只读查询 [new-api](https://github.com/QuantumNous/new-api) 管理信息的插件。支持按会话绑定多个 new-api 实例、查看渠道、查询 Codex、智谱 Coding Plan 与 Grok 订阅用量，以及将 Dashboard Flow 绘制成适合聊天发送的 Sankey 图。
+用于在 AstrBot 中查询和管理 [new-api](https://github.com/QuantumNous/new-api) 的插件。支持按会话绑定多个 new-api 实例、查看和启用或禁用渠道、查询 Codex、智谱 Coding Plan 与 Grok 订阅用量，以及将 Dashboard Flow 绘制成适合聊天发送的 Sankey 图。
 
 ## 命令
 
@@ -11,8 +11,10 @@
 - `/newapi quota`：生成额度图，展示已启用渠道的周额度、5 小时额度、当前窗口和剩余主动重置次数
 - `/newapi quota all`：同上，但包含手动禁用和自动禁用的渠道
 - `/newapi flow [时间范围]`：生成流图并发送图片；支持 `30m`、`1h`、`7d` 等格式，不传时使用后台配置
+- `/newapi on <渠道 ID>`：启用指定渠道，并返回渠道信息和更新后的额度图
+- `/newapi off <渠道 ID>`：手动禁用指定渠道，并返回渠道信息和更新后的额度图
 
-插件不会修改渠道、消费重置次数或执行其他写操作。
+启用或禁用渠道需要当前 Access Token 具备 new-api 的渠道操作权限。配置了群聊分组后，`on` 和 `off` 只能操作属于该分组的渠道。
 
 ## 安装与配置
 

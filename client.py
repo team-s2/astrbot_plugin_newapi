@@ -86,6 +86,52 @@ class NewApiClient:
             raise NewApiError(str(payload.get("message") or "new-api request failed"))
         return payload.get("data")
 
+    async def post(self, path: str, payload: dict[str, Any]) -> Any:
+        """Send an authenticated JSON POST request and unwrap its response."""
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession(
+                headers=self.headers,
+                timeout=self.timeout,
+                trust_env=True,
+            )
+        try:
+            async with self._session.post(
+                f"{self.base_url}{path}", json=payload
+            ) as response:
+                try:
+                    response_payload = await response.json(content_type=None)
+                except (aiohttp.ContentTypeError, ValueError) as error:
+                    body = (await response.text())[:200]
+                    raise NewApiError(
+                        f"new-api returned HTTP {response.status}: {body or 'empty response'}"
+                    ) from error
+        except (TimeoutError, aiohttp.ClientError) as error:
+            raise NewApiError(f"cannot connect to new-api: {error}") from error
+
+        if response.status >= 400:
+            message = (
+                response_payload.get("message")
+                if isinstance(response_payload, dict)
+                else None
+            )
+            raise NewApiError(
+                f"HTTP {response.status}: {message or 'new-api request failed'}"
+            )
+        if not isinstance(response_payload, dict):
+            raise NewApiError("new-api returned an invalid response")
+        if not response_payload.get("success"):
+            raise NewApiError(
+                str(response_payload.get("message") or "new-api request failed")
+            )
+        return response_payload.get("data")
+
+    async def update_channel_status(self, channel_id: int, status: int) -> bool:
+        """Set a channel to enabled (1) or manually disabled (2)."""
+        data = await self.post(f"/api/channel/{channel_id}/status", {"status": status})
+        if not isinstance(data, bool):
+            raise NewApiError("new-api returned an invalid channel status result")
+        return data
+
     async def list_channels(self, page_size: int = 100) -> tuple[list[dict], int]:
         """Return the first page of channels and the total channel count.
 
