@@ -35,8 +35,7 @@ instances:
       - qq:GroupMessage:123456
       - telegram:GroupMessage:789012
     group_filters:
-      - umo: qq:GroupMessage:123456
-        group: paid
+      - qq:GroupMessage:123456=paid
     flow_stages:
       - token
       - model

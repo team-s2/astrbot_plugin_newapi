@@ -41,28 +41,8 @@
           },
           "group_filters": {
             "description": "群聊分组过滤",
-            "type": "template_list",
-            "hint": "按 UMO 为群聊指定 new-api 分组；未配置的群聊显示全部渠道。",
-            "templates": {
-              "group_filter": {
-                "name": "群聊分组",
-                "display_item": "umo",
-                "items": {
-                  "umo": {
-                    "description": "群聊 UMO",
-                    "type": "string",
-                    "hint": "例如 qq:GroupMessage:123456。",
-                    "default": ""
-                  },
-                  "group": {
-                    "description": "new-api 分组",
-                    "type": "string",
-                    "hint": "匹配渠道的分组标签；多个标签以逗号分隔。",
-                    "default": ""
-                  }
-                }
-              }
-            },
+            "type": "list",
+            "hint": "每项填写 UMO=分组，例如 qq:GroupMessage:123456=paid；未配置的群聊显示全部渠道。",
             "default": []
           },
           "flow_stages": {

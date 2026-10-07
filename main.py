@@ -149,13 +149,16 @@ class NewApiPlugin(star.Star):
                 raise ValueError(f"new-api 实例“{name}”的群聊分组必须是数组")
             group_filters: dict[str, str] = {}
             for raw_filter in raw_group_filters:
-                if not isinstance(raw_filter, dict):
-                    raise ValueError(f"new-api 实例“{name}”包含无效群聊分组")
-                filter_umo = str(raw_filter.get("umo") or "").strip()
-                filter_group = str(raw_filter.get("group") or "").strip()
+                if isinstance(raw_filter, dict):
+                    filter_umo = str(raw_filter.get("umo") or "").strip()
+                    filter_group = str(raw_filter.get("group") or "").strip()
+                else:
+                    filter_umo, separator, filter_group = str(raw_filter).partition("=")
+                    filter_umo = filter_umo.strip()
+                    filter_group = filter_group.strip() if separator else ""
                 if not filter_umo or not filter_group:
                     raise ValueError(
-                        f"new-api 实例“{name}”的群聊分组必须填写 UMO 和分组"
+                        f"new-api 实例“{name}”的群聊分组格式错误，应为 UMO=分组"
                     )
                 if (
                     filter_umo in group_filters
