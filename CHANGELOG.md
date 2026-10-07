@@ -1,5 +1,11 @@
 # 更新日志
 
+## 1.7.0 - 2026-10-08
+
+- 新增按群聊 UMO 配置 new-api 分组过滤功能。
+- `/newapi channel`、`/newapi quota` 和 `/newapi flow` 在配置分组后仅显示对应分组的渠道和流量。
+- 支持使用 `allgroup` 参数临时取消群聊分组过滤。
+
 ## 1.6.3 - 2026-10-05
 
 - `/newapi quota` 默认只显示已启用的渠道，已禁用渠道不再请求上游额度；`/newapi quota all` 显示全部渠道（即此前的行为）。

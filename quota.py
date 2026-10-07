@@ -351,7 +351,7 @@ def normalize_grok(common: dict, usage: object) -> ChannelQuota:
 
 
 async def collect_quotas(
-    client: NewApiClient, include_disabled: bool = False
+    client: NewApiClient, include_disabled: bool = False, group: str | None = None
 ) -> list[ChannelQuota]:
     """Fetch channels with at most four concurrent upstream requests.
 
@@ -359,6 +359,13 @@ async def collect_quotas(
     ``include_disabled`` is set.
     """
     channels = await client.all_channels()
+    if group:
+        channels = [
+            channel
+            for channel in channels
+            if group
+            in {part.strip() for part in str(channel.get("group") or "").split(",")}
+        ]
     if not include_disabled:
         channels = [channel for channel in channels if channel.get("status") == 1]
     semaphore = asyncio.Semaphore(4)

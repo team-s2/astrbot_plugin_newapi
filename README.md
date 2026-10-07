@@ -34,11 +34,16 @@ instances:
     umos:
       - qq:GroupMessage:123456
       - telegram:GroupMessage:789012
+    group_filters:
+      - umo: qq:GroupMessage:123456
+        group: paid
     flow_stages:
       - token
       - model
       - channel
 ```
+
+`group_filters` 可按群聊 UMO 指定 new-api 分组。配置后，该群聊的 `channel`、`quota` 和 `flow` 只显示对应分组；命令加入 `allgroup` 参数时显示全部结果。未配置的群聊保持原有行为。
 
 插件使用以下请求头访问 new-api：
 

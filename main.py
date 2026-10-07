@@ -77,6 +77,7 @@ class NewApiInstance:
     name: str
     client: NewApiClient
     flow_stages: tuple[FlowStage, ...]
+    group_filters: dict[str, str]
 
 
 @star.register(
@@ -143,6 +144,26 @@ class NewApiPlugin(star.Star):
             if not isinstance(raw_umos, list):
                 raise ValueError(f"new-api 实例“{name}”的 UMO 必须是数组")
 
+            raw_group_filters = raw_instance.get("group_filters", [])
+            if not isinstance(raw_group_filters, list):
+                raise ValueError(f"new-api 实例“{name}”的群聊分组必须是数组")
+            group_filters: dict[str, str] = {}
+            for raw_filter in raw_group_filters:
+                if not isinstance(raw_filter, dict):
+                    raise ValueError(f"new-api 实例“{name}”包含无效群聊分组")
+                filter_umo = str(raw_filter.get("umo") or "").strip()
+                filter_group = str(raw_filter.get("group") or "").strip()
+                if not filter_umo or not filter_group:
+                    raise ValueError(
+                        f"new-api 实例“{name}”的群聊分组必须填写 UMO 和分组"
+                    )
+                if (
+                    filter_umo in group_filters
+                    and group_filters[filter_umo] != filter_group
+                ):
+                    raise ValueError(f"UMO {filter_umo} 配置了多个不同的 new-api 分组")
+                group_filters[filter_umo] = filter_group
+
             raw_stages = raw_instance.get(
                 "flow_stages", ["token", "model", "channel"]
             )
@@ -165,6 +186,7 @@ class NewApiPlugin(star.Star):
                 name=name,
                 client=NewApiClient(base_url, access_token, user_id, timeout),
                 flow_stages=flow_stages,
+                group_filters=group_filters,
             )
             self.instances.append(instance)
             for raw_umo in raw_umos:
@@ -193,6 +215,30 @@ class NewApiPlugin(star.Star):
             )
         return instance
 
+    @staticmethod
+    def _without_allgroup(value: str) -> tuple[str, bool]:
+        parts = value.split()
+        has_allgroup = any(part.casefold() == "allgroup" for part in parts)
+        return (
+            " ".join(part for part in parts if part.casefold() != "allgroup"),
+            has_allgroup,
+        )
+
+    @staticmethod
+    def _channel_has_group(channel: dict[str, Any], group: str | None) -> bool:
+        if not group:
+            return True
+        return group in {
+            part.strip() for part in str(channel.get("group") or "").split(",")
+        }
+
+    def _group_for(
+        self, event: AstrMessageEvent, instance: NewApiInstance, allgroup: bool
+    ) -> str | None:
+        if allgroup:
+            return None
+        return instance.group_filters.get(event.unified_msg_origin)
+
     @filter.command_group("newapi")
     def newapi(self) -> None:
         """Group new-api administration commands."""
@@ -214,16 +260,20 @@ class NewApiPlugin(star.Star):
             yield event.plain_result(str(error))
             return
 
-        query = (channel or "").strip()
+        query, allgroup = self._without_allgroup((channel or "").strip())
+        group = self._group_for(event, instance, allgroup)
         if query:
-            async for result in self._show_channel(event, instance, query):
+            async for result in self._show_channel(event, instance, query, group):
                 yield result
         else:
-            async for result in self._list_channels(event, instance):
+            async for result in self._list_channels(event, instance, group):
                 yield result
 
     async def _list_channels(
-        self, event: AstrMessageEvent, instance: NewApiInstance
+        self,
+        event: AstrMessageEvent,
+        instance: NewApiInstance,
+        group: str | None = None,
     ):
         """List all channels with usage information in a list format."""
         client = instance.client
@@ -236,6 +286,13 @@ class NewApiPlugin(star.Star):
             if isinstance(channels_result, Exception):
                 raise channels_result
             channels, total = channels_result
+            if group:
+                channels = [
+                    ch
+                    for ch in await client.all_channels()
+                    if self._channel_has_group(ch, group)
+                ]
+                total = len(channels)
             quota_per_unit = (
                 quota_per_unit_result
                 if isinstance(quota_per_unit_result, float)
@@ -295,6 +352,7 @@ class NewApiPlugin(star.Star):
         event: AstrMessageEvent,
         instance: NewApiInstance,
         query: str,
+        group: str | None = None,
     ):
         """Show one channel and subscription Account Info when available."""
         client = instance.client
@@ -305,6 +363,8 @@ class NewApiPlugin(star.Star):
                 raise NewApiError("new-api 返回了无效的渠道 ID")
             found = await client.get(f"/api/channel/{channel_id}")
             if not isinstance(found, dict):
+                raise NewApiError(f"未找到渠道：{query}")
+            if not self._channel_has_group(found, group):
                 raise NewApiError(f"未找到渠道：{query}")
 
             quota_per_unit_result, account_info = await asyncio.gather(
@@ -354,17 +414,19 @@ class NewApiPlugin(star.Star):
             yield event.plain_result(f"查询 new-api 失败：{error}")
 
     @newapi.command("quota")
-    async def quota(self, event: AstrMessageEvent, scope: str = ""):
+    async def quota(self, event: AstrMessageEvent, scope: GreedyStr = ""):
         """Send a quota image for the enabled channels, or all with ``all``."""
-        scope = scope.strip().lower()
+        scope, allgroup = self._without_allgroup(scope.strip())
+        scope = scope.lower()
         if scope not in ("", "all"):
             yield event.plain_result("用法：/newapi quota [all]")
             return
         try:
             instance = self._instance_for(event)
+            group = self._group_for(event, instance, allgroup)
             async with self._quota_render_lock:
                 rows = await collect_quotas(
-                    instance.client, include_disabled=scope == "all"
+                    instance.client, include_disabled=scope == "all", group=group
                 )
                 now = time.time()
                 output = Path(get_astrbot_temp_path()) / f"newapi-quota-{uuid4().hex}.png"
@@ -385,7 +447,7 @@ class NewApiPlugin(star.Star):
             yield event.plain_result(f"生成 new-api 额度图失败：{error}")
 
     @newapi.command("flow")
-    async def flow(self, event: AstrMessageEvent, duration: str = ""):
+    async def flow(self, event: AstrMessageEvent, duration: GreedyStr = ""):
         """Render and send the configured new-api Dashboard flow.
 
         Args:
@@ -395,6 +457,8 @@ class NewApiPlugin(star.Star):
         output: Path | None = None
         try:
             instance = self._instance_for(event)
+            duration, allgroup = self._without_allgroup(duration.strip())
+            group = self._group_for(event, instance, allgroup)
             range_seconds = (
                 parse_flow_duration(duration)
                 if duration
@@ -406,6 +470,18 @@ class NewApiPlugin(star.Star):
             )
             # Channel tests are logged without a token, so token_id is 0 (omitted).
             rows = [row for row in rows if row.get("token_id")]
+            if group:
+                channels = await instance.client.all_channels()
+                channel_ids = {
+                    int(channel["id"])
+                    for channel in channels
+                    if self._channel_has_group(channel, group) and channel.get("id")
+                }
+                rows = [
+                    row
+                    for row in rows
+                    if int(row.get("channel_id") or 0) in channel_ids
+                ]
             if not rows:
                 raise NewApiError("所选时间范围内没有流图数据")
 
