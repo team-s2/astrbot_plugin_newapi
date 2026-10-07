@@ -10,7 +10,7 @@ from typing import Any, Literal
 
 import skia
 
-from .account_info import compact_token_count
+from ..core.account_info import compact_token_count
 from .painter import Painter
 
 FlowStage = Literal["user", "node", "token", "group", "model", "channel"]

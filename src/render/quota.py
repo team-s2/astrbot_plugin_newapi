@@ -16,8 +16,8 @@ from pathlib import Path
 
 import skia
 
+from ..core.quota import ChannelQuota, QuotaWindow, ResetPool
 from .painter import UNIT_GAP, Painter
-from .quota import ChannelQuota, QuotaWindow, ResetPool
 
 TZ = timezone(timedelta(hours=8))
 DAY = 86400

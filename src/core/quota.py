@@ -10,8 +10,8 @@ from datetime import datetime
 from math import isfinite
 from typing import Any
 
+from ..api.client import NewApiClient, NewApiError
 from .account_info import _codex_windows
-from .client import NewApiClient, NewApiError
 
 WEEK = 7 * 86400
 FIVE_HOURS = 5 * 3600
