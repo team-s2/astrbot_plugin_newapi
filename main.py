@@ -8,15 +8,21 @@ from astrbot.api import AstrBotConfig, star
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.core.star.filter.command import GreedyStr
 
-from .src.commands.channel import ChannelCommands
 from .src.commands.flow import FlowCommands
+from .src.commands.help import HelpCommands, NotBareGroup, OnlyBareGroup
 from .src.commands.quota import QuotaCommands
+from .src.commands.routing import ChannelRoutingCommands
 from .src.commands.status import StatusCommands
 from .src.config import load_instances
 
 
 class NewApiPlugin(
-    ChannelCommands, QuotaCommands, StatusCommands, FlowCommands, star.Star
+    QuotaCommands,
+    StatusCommands,
+    ChannelRoutingCommands,
+    HelpCommands,
+    FlowCommands,
+    star.Star,
 ):
     """Expose read-only new-api commands to sessions bound to an instance."""
 
@@ -37,22 +43,20 @@ class NewApiPlugin(
         """Release all HTTP sessions when AstrBot unloads the plugin."""
         await asyncio.gather(*(item.client.close() for item in self.instances))
 
+    # The custom filters below keep the bare ``/newapi`` invocation in plugin
+    # hands: NotBareGroup suppresses AstrBot's auto-generated command tree for
+    # the group, and the ``newapi_help`` command (only matching the bare group
+    # name via OnlyBareGroup) answers it with our own unordered help list.
     @filter.command_group("newapi")
+    @filter.custom_filter(NotBareGroup)
     def newapi(self) -> None:
         """Group new-api administration commands."""
 
-    @newapi.command("channel")
-    async def channel(self, event: AstrMessageEvent, channel: GreedyStr = ""):
-        """List all channels or show details for one.
-
-        Without arguments, lists channels with usage info.
-        With a channel name or ID, shows that channel's details.
-
-        Args:
-            event: Incoming AstrBot message event.
-            channel: Optional channel name or numeric ID.
-        """
-        async for result in self._channel(event, channel):
+    @filter.custom_filter(OnlyBareGroup)
+    @filter.command("newapi")
+    async def newapi_help(self, event: AstrMessageEvent):
+        """List this plugin's subcommands."""
+        async for result in self._help(event):
             yield result
 
     @newapi.command("quota")
@@ -73,6 +77,18 @@ class NewApiPlugin(
     ):
         """Disable one existing channel and send its updated quota overview."""
         async for result in self._set_channel_status(event, channel_id, False):
+            yield result
+
+    @newapi.command("weight")
+    async def weight(self, event: AstrMessageEvent, args: GreedyStr = ""):
+        """Set one channel's load-balancing weight and send the quota image."""
+        async for result in self._set_channel_routing(event, args, "weight"):
+            yield result
+
+    @newapi.command("priority")
+    async def priority(self, event: AstrMessageEvent, args: GreedyStr = ""):
+        """Set one channel's selection priority and send the quota image."""
+        async for result in self._set_channel_routing(event, args, "priority"):
             yield result
 
     @newapi.command("flow")

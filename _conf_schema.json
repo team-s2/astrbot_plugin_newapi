@@ -73,11 +73,6 @@
     "type": "int",
     "default": 20
   },
-  "channel_list_limit": {
-    "description": "渠道列表最多显示数量",
-    "type": "int",
-    "default": 30
-  },
   "flow_hours": {
     "description": "流图时间范围（小时）",
     "type": "int",

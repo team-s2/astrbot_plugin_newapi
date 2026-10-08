@@ -1,20 +1,21 @@
 # astrbot_plugin_newapi
 
-用于在 AstrBot 中查询和管理 [new-api](https://github.com/QuantumNous/new-api) 的插件。支持按会话绑定多个 new-api 实例、查看和启用或禁用渠道、查询 Codex、智谱 Coding Plan 与 Grok 订阅用量，以及将 Dashboard Flow 绘制成适合聊天发送的 Sankey 图。
+用于在 AstrBot 中查询和管理 [new-api](https://github.com/QuantumNous/new-api) 的插件。支持按会话绑定多个 new-api 实例、启用或禁用渠道、调整渠道权重与优先级、查询 Codex、智谱 Coding Plan 与 Grok 订阅用量，以及将 Dashboard Flow 绘制成适合聊天发送的 Sankey 图。
 
 ## 命令
 
 命令不要求 AstrBot 管理员权限，只有绑定了 new-api 实例的会话可以执行：
 
-- `/newapi channel`：列出所有渠道；订阅渠道会同时查询 Account Info
-- `/newapi channel <渠道名称或 ID>`：查看渠道详情和可用的 Account Info
-- `/newapi quota`：生成额度图，展示已启用渠道的周额度、5 小时额度、当前窗口和剩余主动重置次数
+- `/newapi`：显示本插件的无序列表帮助
+- `/newapi quota`：生成额度图，展示已启用渠道的权重、优先级、周额度、5 小时额度、当前窗口和剩余主动重置次数；渠道行按编号升序排列
 - `/newapi quota all`：同上，但包含手动禁用和自动禁用的渠道
 - `/newapi flow [时间范围]`：生成流图并发送图片；支持 `30m`、`1h`、`7d` 等格式，不传时使用后台配置
 - `/newapi on <渠道 ID>`：启用指定渠道，并返回渠道信息和更新后的额度图
 - `/newapi off <渠道 ID>`：手动禁用指定渠道，并返回渠道信息和更新后的额度图
+- `/newapi weight <渠道 ID> <数值>`：设置渠道权重（同优先级内越大分到的请求越多），并返回更新后的额度图
+- `/newapi priority <渠道 ID> <数值>`：设置渠道优先级（越大越优先选中），并返回更新后的额度图
 
-启用或禁用渠道需要当前 Access Token 具备 new-api 的渠道操作权限。配置了群聊分组后，`on` 和 `off` 只能操作属于该分组的渠道。
+启用或禁用渠道需要当前 Access Token 具备 new-api 的渠道操作权限，修改权重和优先级需要渠道编辑权限。配置了群聊分组后，`on`、`off`、`weight` 和 `priority` 只能操作属于该分组的渠道。
 
 ## 安装与配置
 
@@ -44,7 +45,7 @@ instances:
       - channel
 ```
 
-`group_filters` 可按群聊 UMO 指定 new-api 分组。配置后，该群聊的 `channel`、`quota` 和 `flow` 只显示对应分组；命令加入 `allgroup` 参数时显示全部结果。未配置的群聊保持原有行为。
+`group_filters` 可按群聊 UMO 指定 new-api 分组。配置后，该群聊的 `quota` 和 `flow` 只显示对应分组的渠道和流量；命令加入 `allgroup` 参数时显示全部结果。未配置的群聊保持原有行为。
 
 插件使用以下请求头访问 new-api：
 
@@ -53,11 +54,11 @@ Authorization: Bearer <access_token>
 New-Api-User: <user_id>
 ```
 
-`channel` 和 `/api/data/flow` 需要 new-api 管理员权限。若 Flow 需要显示 `token` 或 `node` 阶段，应为相应实例配置 Root 用户的 Access Token；普通管理员能够获得的 Flow 维度较少。
+渠道查询、`/api/data/flow` 和权重 / 优先级修改需要 new-api 管理员权限（后者需要渠道编辑权限）。若 Flow 需要显示 `token` 或 `node` 阶段，应为相应实例配置 Root 用户的 Access Token；普通管理员能够获得的 Flow 维度较少。
 
 ## 额度图片
 
-`/newapi quota` 查询当前会话绑定实例的全部已启用渠道（加 `all` 时包含已禁用渠道，禁用渠道不会被请求上游），不受 `channel_list_limit` 限制。支持 Codex（类型 57）、智谱 Coding Plan（类型 100，以及类型 26 配合 `glm-coding-plan`）、Grok Subscription（类型 101）；不支持额度查询的渠道不显示。单个渠道认证失败、超时等不会中断其他渠道的展示，错误汇总在图片底部。
+`/newapi quota` 查询当前会话绑定实例的全部已启用渠道（加 `all` 时包含已禁用渠道，禁用渠道不会被请求上游）。支持 Codex（类型 57）、智谱 Coding Plan（类型 100，以及类型 26 配合 `glm-coding-plan`）、Grok Subscription（类型 101）；不支持额度查询的渠道不显示。单个渠道认证失败、超时等不会中断其他渠道的展示，错误原位显示在该渠道行内。渠道行固定按编号升序排列，每行在名称后显示该渠道的权重与优先级。
 
 图片按上游实际返回的窗口显示周限额、5 小时限额，每行并列显示剩余百分比和重置倒计时，不显示 token 计数；没有的窗口不占位。Codex 和智谱均支持此布局，Codex 附加限额（包括 Spark）不在此图中展示。Grok 没有 5 小时窗口和重置卡，周额度按上游返回的周期显示在周轴上，重置卡一列改为显示月度额度（剩余百分比、已用 / 套餐美元额度与重置倒计时）。深色表示已用额度，浅色表示剩余，橙线表示当前时间。周窗口与重置卡共用日期轴，5 小时窗口使用独立的相对小时轴，不显示下方刻度文字。窗口起点按重置时间减去周期推算，不代表历史请求分布。时间统一为 UTC+8；未知用量不视为 0，已到期窗口提示等待上游更新。
 
@@ -76,8 +77,6 @@ New-Api-User: <user_id>
 流图以 3600 × 2240 为最小画布，并根据实际列数、标签宽度和各列节点数量自动扩大。提高 Top N 会显示更多节点，同时自动增加画布高度，避免标签从上下边缘溢出。
 
 命令行时间范围支持分钟（`m`）、小时（`h`）、天（`d`），最大为 30 天；必须带单位，裸数字不会被接受。
-
-渠道列表中的“计费额度”来自 new-api 的 `used_quota`，并使用 `/api/status` 返回的 `quota_per_unit` 将渠道 USD 余额换算为相同单位。它是 new-api 的内部计费额度，不等同于 Flow 中的实际请求 token 数。
 
 流图与额度图均使用 Skia（`skia-python`）绘制，优先使用 Noto Sans CJK SC 的 Regular / Bold 字重，找不到时依次尝试思源黑体、苹方和微软雅黑。为了正确显示中文，推荐在自定义 AstrBot 镜像中安装 Noto CJK 字体，例如 Debian/Ubuntu 镜像中的 `fonts-noto-cjk`。也可以通过 `font_path` 指向镜像内的 TTF/TTC 字体文件。
 

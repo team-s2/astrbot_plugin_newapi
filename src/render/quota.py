@@ -1,11 +1,15 @@
 """Subscription quota overview rendered with Skia.
 
-One line per channel. The weekly window sits on a date axis and the 5h window
-on an hour axis, each drawn where it falls in time with dark = used and
-light = remaining; an orange line marks now, and used quota past it is ahead
-of pace and turns red. Reset cards get a third, narrow date axis at the end of
-the row, one thin lane per card type; Grok, which has none, shows its monthly
-dollar allowance there instead.
+One line per channel, always in channel ID order. The weekly window sits on a
+date axis and the 5h window on an hour axis, each drawn where it falls in time
+with dark = used and light = remaining; an orange line marks now, and used
+quota past it is ahead of pace and turns red. Reset cards get a third, narrow
+date axis at the end of the row, one thin lane per card type; Grok, which has
+none, shows its monthly dollar allowance there instead. Between the channel
+name and the weekly window sit two narrow numeric cells for the new-api
+routing knobs (weight and priority). Channels whose upstream query failed
+keep their row in place: their windows are blanked and the error is printed
+across the row.
 """
 
 from __future__ import annotations
@@ -40,20 +44,22 @@ FIVE_PALE = 0xFFDDF1EE
 CARD = 0xFF5B5BD6
 CARD_LANE = 0xFFE1E1F7
 
-WIDTH = 1216
+WIDTH = 1388
 MARGIN = 24
 PAD = 20
 LEFT = MARGIN + PAD
 RIGHT = WIDTH - MARGIN - PAD
 NAME_W = 192
 # Right edges of the value cells, then the three time axes they introduce.
-WEEK_VALUE = 294
-WEEK_X0, WEEK_X1 = 308, 626
-FIVE_VALUE = 694
-FIVE_X0, FIVE_X1 = 708, 906
-CARD_LABEL = 920
-CARD_VALUE = 952
-CARD_X0, CARD_X1 = 964, RIGHT
+WEIGHT_VALUE = 294
+PRIORITY_VALUE = 380
+WEEK_VALUE = 466
+WEEK_X0, WEEK_X1 = 480, 798
+FIVE_VALUE = 866
+FIVE_X0, FIVE_X1 = 880, 1078
+CARD_LABEL = 1092
+CARD_VALUE = 1124
+CARD_X0, CARD_X1 = 1136, RIGHT
 TITLE_H = 60
 HEAD_H = 34
 ROW_H = 52
@@ -184,6 +190,14 @@ def window_bar(
     if used > now_x:
         p.rect(now_x, top, used, bottom, OVER)
     p.canvas.restore()
+
+
+def routing_cell(p: Painter, right: float, cy: float, value: int | None):
+    """Weight or priority: one plain number, an em dash when upstream omits it."""
+    if value is None:
+        p.text(right, cy, "—", 14, MUTED, "bold", "right")
+    else:
+        p.text(right, cy, str(value), 14, INK, "bold", "right")
 
 
 def value_cell(p: Painter, right: float, cy: float, window: QuotaWindow | None, now):
@@ -325,10 +339,10 @@ def card_cell(p: Painter, cy: float, row: ChannelQuota, axis: Axis, now):
 def render_quota(
     rows: list[ChannelQuota], output: Path, now: float, font_path: Path | None = None
 ) -> None:
-    """One line per supported channel; unsupported channel types are left out."""
+    """One line per supported channel in channel ID order; unsupported types
+    are left out, and failed channels keep their row with the error printed."""
     supported = [row for row in rows if not row.unsupported]
-    visible = [row for row in supported if not row.issue]
-    failed = [row for row in supported if row.issue]
+    live = [row for row in supported if not row.issue]
     body = len(supported) * ROW_H or 64
     height = MARGIN + TITLE_H + HEAD_H + body + 8 + MARGIN
     if height > 20000:
@@ -359,46 +373,56 @@ def render_quota(
     p.rect(MARGIN, top, WIDTH - MARGIN, height - MARGIN, PANEL, 14)
     head = top + HEAD_H / 2 + 1
     rows_top = top + HEAD_H
-    rows_bottom = rows_top + len(visible) * ROW_H
-    week, five = week_axis(visible, now), five_axis(now)
-    cards = card_axis(visible, now)
+    rows_bottom = rows_top + len(supported) * ROW_H
+    week, five = week_axis(live, now), five_axis(now)
+    cards = card_axis(live, now)
+    p.text(WEIGHT_VALUE, head, "权重", 12, SUB, "bold", "right")
+    p.text(PRIORITY_VALUE, head, "优先级", 12, SUB, "bold", "right")
     p.text(WEEK_VALUE, head, "周", 12, SUB, "bold", "right")
     p.text(FIVE_VALUE, head, "5h", 12, SUB, "bold", "right")
     p.text(CARD_VALUE, head, "重置卡", 12, SUB, "bold", "right")
-    if visible:
+    if live:
         week_head(p, week, head, rows_top, rows_bottom, now)
         five_head(p, five, head, rows_top, rows_bottom)
         week_head(p, cards, head, rows_top, rows_bottom, now)
     y = rows_top
-    for row in visible:
+    for row in supported:
         p.line(LEFT, y, RIGHT, y, RULE)
         cy = y + ROW_H / 2
         draw_name(p, cy - 9, row)
-        value_cell(p, WEEK_VALUE, cy, row.weekly, now)
-        value_cell(p, FIVE_VALUE, cy, row.five_hour, now)
-        window_bar(p, row.weekly, cy, week, now, WEEK, WEEK_PALE)
-        window_bar(p, row.five_hour, cy, five, now, FIVE, FIVE_PALE)
-        if row.provider != "Grok":
-            card_cell(p, cy, row, cards, now)
+        routing_cell(p, WEIGHT_VALUE, cy, row.weight)
+        routing_cell(p, PRIORITY_VALUE, cy, row.priority)
+        if not row.issue:
+            value_cell(p, WEEK_VALUE, cy, row.weekly, now)
+            value_cell(p, FIVE_VALUE, cy, row.five_hour, now)
+            window_bar(p, row.weekly, cy, week, now, WEEK, WEEK_PALE)
+            window_bar(p, row.five_hour, cy, five, now, FIVE, FIVE_PALE)
+            if row.provider != "Grok":
+                card_cell(p, cy, row, cards, now)
         y += ROW_H
-    if visible:
+    if live:
         for axis in (week, five, cards):
             now_line(p, axis, rows_top, rows_bottom, now)
-    # Grok rows don't use the card axis: blank out its grid and now line first.
-    for index, row in enumerate(visible):
-        if row.provider == "Grok":
-            row_top = rows_top + index * ROW_H
-            row_bottom = row_top + ROW_H
-            p.rect(CARD_LABEL - 6, row_top - 1, RIGHT, row_bottom + 1, PANEL)
-            p.line(CARD_LABEL - 6, row_top, RIGHT, row_top, RULE)
-            if row_bottom < rows_bottom or failed:
+    # Second pass for rows that blank part of the grid: failed rows paint over
+    # all three axes to print their error, and Grok rows blank the card axis
+    # for their monthly cell. Both must run after the now lines.
+    y = rows_top
+    for row in supported:
+        row_bottom = y + ROW_H
+        if row.issue:
+            x0 = PRIORITY_VALUE + 12
+            p.rect(x0, y - 1, RIGHT, row_bottom + 1, PANEL)
+            p.line(x0, y, RIGHT, y, RULE)
+            if row_bottom < rows_bottom:
+                p.line(x0, row_bottom, RIGHT, row_bottom, RULE)
+            p.text(x0 + 12, y + ROW_H / 2, p.fit(row.issue, RIGHT - x0 - 12, 13),
+                   13, OVER)
+        elif row.provider == "Grok":
+            p.rect(CARD_LABEL - 6, y - 1, RIGHT, row_bottom + 1, PANEL)
+            p.line(CARD_LABEL - 6, y, RIGHT, y, RULE)
+            if row_bottom < rows_bottom:
                 p.line(CARD_LABEL - 6, row_bottom, RIGHT, row_bottom, RULE)
-            monthly_cell(p, row_top + ROW_H / 2, row, now)
-    for row in failed:
-        p.line(LEFT, y, RIGHT, y, RULE)
-        draw_name(p, y + ROW_H / 2 - 9, row)
-        x = LEFT + NAME_W + 16
-        p.text(x, y + ROW_H / 2, p.fit(row.issue, RIGHT - x, 13), 13, OVER)
+            monthly_cell(p, y + ROW_H / 2, row, now)
         y += ROW_H
     if not supported:
         p.text(

@@ -86,8 +86,8 @@ class NewApiClient:
             raise NewApiError(str(payload.get("message") or "new-api request failed"))
         return payload.get("data")
 
-    async def post(self, path: str, payload: dict[str, Any]) -> Any:
-        """Send an authenticated JSON POST request and unwrap its response."""
+    async def _request_json(self, method: str, path: str, payload: dict[str, Any]):
+        """Send an authenticated JSON request and unwrap its response."""
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession(
                 headers=self.headers,
@@ -95,8 +95,8 @@ class NewApiClient:
                 trust_env=True,
             )
         try:
-            async with self._session.post(
-                f"{self.base_url}{path}", json=payload
+            async with self._session.request(
+                method, f"{self.base_url}{path}", json=payload
             ) as response:
                 try:
                     response_payload = await response.json(content_type=None)
@@ -125,6 +125,14 @@ class NewApiClient:
             )
         return response_payload.get("data")
 
+    async def post(self, path: str, payload: dict[str, Any]) -> Any:
+        """Send an authenticated JSON POST request and unwrap its response."""
+        return await self._request_json("POST", path, payload)
+
+    async def put(self, path: str, payload: dict[str, Any]) -> Any:
+        """Send an authenticated JSON PUT request and unwrap its response."""
+        return await self._request_json("PUT", path, payload)
+
     async def update_channel_status(self, channel_id: int, status: int) -> bool:
         """Set a channel to enabled (1) or manually disabled (2)."""
         data = await self.post(f"/api/channel/{channel_id}/status", {"status": status})
@@ -132,37 +140,29 @@ class NewApiClient:
             raise NewApiError("new-api returned an invalid channel status result")
         return data
 
-    async def list_channels(self, page_size: int = 100) -> tuple[list[dict], int]:
-        """Return the first page of channels and the total channel count.
+    async def update_channel_fields(
+        self, channel_id: int, fields: dict[str, Any]
+    ) -> dict:
+        """Patch editable channel fields such as ``weight`` and ``priority``.
+
+        The request only carries the fields to change; new-api keeps the rest
+        of the channel record and rebuilds its routing abilities from the
+        stored state, so credentials and model lists are never touched.
 
         Args:
-            page_size: Number of channels to request, capped by new-api at 100.
+            channel_id: Numeric ID of the channel to update.
+            fields: Channel fields to write, e.g. ``{"weight": 3}``.
 
         Returns:
-            A tuple containing channel rows and total count.
+            The updated channel record.
 
         Raises:
-            NewApiError: If the response shape is invalid.
+            NewApiError: If the request fails or the response shape is invalid.
         """
-        data = await self.get(
-            "/api/channel/", {"p": 1, "page_size": min(page_size, 100)}
-        )
-        if not isinstance(data, dict) or not isinstance(data.get("items"), list):
-            raise NewApiError("new-api returned an invalid channel list")
-        return data["items"], int(data.get("total", len(data["items"])))
-
-    async def quota_per_unit(self) -> float:
-        """Return the number of quota units configured for one USD."""
-        data = await self.get("/api/status")
+        data = await self.put("/api/channel/", {"id": channel_id, **fields})
         if not isinstance(data, dict):
-            raise NewApiError("new-api returned invalid system status data")
-        try:
-            value = float(data.get("quota_per_unit"))
-        except (TypeError, ValueError) as error:
-            raise NewApiError("new-api returned an invalid quota_per_unit") from error
-        if value <= 0:
-            raise NewApiError("new-api returned a non-positive quota_per_unit")
-        return value
+            raise NewApiError("new-api returned an invalid channel update result")
+        return data
 
     async def all_channels(self) -> list[dict]:
         """Read every channel page for the quota image, without the text-list cap."""
@@ -187,44 +187,6 @@ class NewApiClient:
             if not added:
                 raise NewApiError("渠道分页未返回新数据，请重试")
             page += 1
-
-    async def find_channel(self, query: str) -> dict:
-        """Resolve a channel ID or an exact channel name.
-
-        Args:
-            query: Numeric ID or channel name.
-
-        Returns:
-            The resolved channel.
-
-        Raises:
-            NewApiError: If no unique channel can be resolved.
-        """
-        query = query.strip()
-        if query.isdigit():
-            data = await self.get(f"/api/channel/{int(query)}")
-            if not isinstance(data, dict):
-                raise NewApiError(f"channel {query} was not found")
-            return data
-
-        data = await self.get(
-            "/api/channel/search",
-            {"keyword": query, "p": 1, "page_size": 100},
-        )
-        if not isinstance(data, dict) or not isinstance(data.get("items"), list):
-            raise NewApiError("new-api returned invalid channel search results")
-        rows = data["items"]
-        exact = [
-            row
-            for row in rows
-            if str(row.get("name", "")).casefold() == query.casefold()
-        ]
-        if len(exact) == 1:
-            return exact[0]
-        if not rows:
-            raise NewApiError(f"未找到渠道：{query}")
-        names = "、".join(f"{row.get('name')} (#{row.get('id')})" for row in rows[:8])
-        raise NewApiError(f"渠道名称不唯一，请改用 ID：{names}")
 
     async def codex_usage(self, channel_id: int) -> dict:
         """Fetch Codex subscription usage for a channel.

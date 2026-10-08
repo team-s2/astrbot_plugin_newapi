@@ -44,6 +44,10 @@ class ChannelQuota:
     name: str
     provider: str
     status: str
+    # Routing knobs shown next to each channel in the quota image; they come
+    # straight from the new-api channel record and may be absent (None).
+    weight: int | None = None
+    priority: int | None = None
     plan: str = ""
     weekly: QuotaWindow | None = None
     five_hour: QuotaWindow | None = None
@@ -90,6 +94,16 @@ def number(value: Any) -> float | None:
     except (TypeError, ValueError, OverflowError):
         return None
     return result if isfinite(result) and result >= 0 else None
+
+
+def routing_value(value: Any) -> int | None:
+    """A channel weight or priority: integers pass through, junk becomes None."""
+    if isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
 
 
 def issue_text(error: object) -> str:
@@ -181,6 +195,8 @@ def normalize_quota(
         "status": {1: "启用", 2: "手动禁用", 3: "自动禁用"}.get(
             channel.get("status"), "状态未知"
         ),
+        "weight": routing_value(channel.get("weight")),
+        "priority": routing_value(channel.get("priority")),
     }
     if kind is None:
         return ChannelQuota(
@@ -362,7 +378,7 @@ async def collect_quotas(
     """Fetch channels with at most four concurrent upstream requests.
 
     Disabled channels are skipped before any upstream request unless
-    ``include_disabled`` is set.
+    ``include_disabled`` is set. Rows are always returned in channel ID order.
     """
     channels = await client.all_channels()
     if group:
@@ -399,4 +415,4 @@ async def collect_quotas(
         return normalize_quota(channel, usage, credits, time.time())
 
     rows = await asyncio.gather(*(fetch(channel) for channel in channels))
-    return sorted(rows, key=lambda row: (row.unsupported, bool(row.issue)))
+    return sorted(rows, key=lambda row: row.channel_id)
