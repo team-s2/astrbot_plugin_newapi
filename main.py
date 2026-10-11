@@ -59,40 +59,41 @@ class NewApiPlugin(
         async for result in self._help(event):
             yield result
 
+    # GreedyStr parameters must not have a default: AstrBot records the
+    # default instead of the annotation, so the parameter degrades to a plain
+    # string holding only the first word. An empty remainder is still "".
     @newapi.command("quota")
-    async def quota(self, event: AstrMessageEvent, scope: GreedyStr = ""):
+    async def quota(self, event: AstrMessageEvent, scope: GreedyStr):
         """Send a quota image for the enabled channels, or all with ``all``."""
         async for result in self._quota(event, scope):
             yield result
 
     @newapi.command("on")
-    async def enable_channel(self, event: AstrMessageEvent, channel_id: GreedyStr = ""):
+    async def enable_channel(self, event: AstrMessageEvent, channel_id: GreedyStr):
         """Enable one existing channel and send its updated quota overview."""
         async for result in self._set_channel_status(event, channel_id, True):
             yield result
 
     @newapi.command("off")
-    async def disable_channel(
-        self, event: AstrMessageEvent, channel_id: GreedyStr = ""
-    ):
+    async def disable_channel(self, event: AstrMessageEvent, channel_id: GreedyStr):
         """Disable one existing channel and send its updated quota overview."""
         async for result in self._set_channel_status(event, channel_id, False):
             yield result
 
     @newapi.command("weight")
-    async def weight(self, event: AstrMessageEvent, args: GreedyStr = ""):
-        """Set one channel's load-balancing weight and send the quota image."""
+    async def weight(self, event: AstrMessageEvent, args: GreedyStr):
+        """Set the weight of one channel, or of every channel with ``all``."""
         async for result in self._set_channel_routing(event, args, "weight"):
             yield result
 
     @newapi.command("priority")
-    async def priority(self, event: AstrMessageEvent, args: GreedyStr = ""):
-        """Set one channel's selection priority and send the quota image."""
+    async def priority(self, event: AstrMessageEvent, args: GreedyStr):
+        """Set the priority of one channel, or of every channel with ``all``."""
         async for result in self._set_channel_routing(event, args, "priority"):
             yield result
 
     @newapi.command("flow")
-    async def flow(self, event: AstrMessageEvent, duration: GreedyStr = ""):
+    async def flow(self, event: AstrMessageEvent, duration: GreedyStr):
         """Render and send the configured new-api Dashboard flow.
 
         Args:
