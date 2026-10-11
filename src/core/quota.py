@@ -64,6 +64,8 @@ class ChannelQuota:
     issue: str = ""
     unsupported: bool = False
     limit_note: str = ""
+    # new-api groups the channel belongs to, in the order configured upstream.
+    groups: tuple[str, ...] = ()
 
 
 def quota_version_label(row: ChannelQuota) -> str:
@@ -84,6 +86,12 @@ def account_kind(channel: dict[str, Any]) -> str | None:
     if channel_type == 101:
         return "grok"
     return None
+
+
+def channel_groups(channel: dict[str, Any]) -> tuple[str, ...]:
+    """The channel's comma-separated new-api groups, deduplicated in order."""
+    parts = (part.strip() for part in str(channel.get("group") or "").split(","))
+    return tuple(dict.fromkeys(part for part in parts if part))
 
 
 def number(value: Any) -> float | None:
@@ -197,6 +205,7 @@ def normalize_quota(
         ),
         "weight": routing_value(channel.get("weight")),
         "priority": routing_value(channel.get("priority")),
+        "groups": channel_groups(channel),
     }
     if kind is None:
         return ChannelQuota(
@@ -382,12 +391,7 @@ async def collect_quotas(
     """
     channels = await client.all_channels()
     if group:
-        channels = [
-            channel
-            for channel in channels
-            if group
-            in {part.strip() for part in str(channel.get("group") or "").split(",")}
-        ]
+        channels = [channel for channel in channels if group in channel_groups(channel)]
     if not include_disabled:
         channels = [channel for channel in channels if channel.get("status") == 1]
     semaphore = asyncio.Semaphore(4)

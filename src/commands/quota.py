@@ -30,7 +30,9 @@ class QuotaCommands(CommandBase):
                 rows = await collect_quotas(
                     instance.client, include_disabled=scope == "all", group=group
                 )
-                output = await self._render_quota_image(event, rows, time.time())
+                output = await self._render_quota_image(
+                    event, instance, rows, time.time()
+                )
             yield event.image_result(str(output))
         except NewApiBindingError as error:
             yield event.plain_result(str(error))

@@ -57,10 +57,21 @@ class CommandBase:
         return Path(font_value) if font_value else None
 
     async def _render_quota_image(
-        self, event: AstrMessageEvent, rows: list[ChannelQuota], now: float
+        self,
+        event: AstrMessageEvent,
+        instance: NewApiInstance,
+        rows: list[ChannelQuota],
+        now: float,
     ) -> Path:
         """Render the quota overview to a tracked temporary PNG file."""
         output = Path(get_astrbot_temp_path()) / f"newapi-quota-{uuid4().hex}.png"
         event.track_temporary_local_file(str(output))
-        await asyncio.to_thread(render_quota, rows, output, now, self._font_path())
+        await asyncio.to_thread(
+            render_quota,
+            rows,
+            output,
+            now,
+            self._font_path(),
+            instance.hidden_groups,
+        )
         return output

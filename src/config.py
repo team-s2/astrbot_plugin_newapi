@@ -30,6 +30,7 @@ class NewApiInstance:
     client: NewApiClient
     flow_stages: tuple[FlowStage, ...]
     group_filters: dict[str, str]
+    hidden_groups: frozenset[str]
 
 
 def load_instances(
@@ -82,6 +83,9 @@ def load_instances(
         group_filters = _parse_group_filters(
             name, raw_instance.get("group_filters", [])
         )
+        hidden_groups = _parse_hidden_groups(
+            name, raw_instance.get("hidden_groups", [])
+        )
         flow_stages = _parse_flow_stages(
             name, raw_instance.get("flow_stages", ["token", "model", "channel"])
         )
@@ -91,6 +95,7 @@ def load_instances(
             client=NewApiClient(base_url, access_token, user_id, timeout),
             flow_stages=flow_stages,
             group_filters=group_filters,
+            hidden_groups=hidden_groups,
         )
         instances.append(instance)
         for raw_umo in raw_umos:
@@ -124,6 +129,13 @@ def _parse_group_filters(name: str, raw_group_filters: Any) -> dict[str, str]:
             raise ValueError(f"UMO {filter_umo} 配置了多个不同的 new-api 分组")
         group_filters[filter_umo] = filter_group
     return group_filters
+
+
+def _parse_hidden_groups(name: str, raw_groups: Any) -> frozenset[str]:
+    """Group names whose tags the quota image leaves out."""
+    if not isinstance(raw_groups, list):
+        raise ValueError(f"new-api 实例“{name}”的隐藏分组必须是数组")
+    return frozenset(group for raw in raw_groups if (group := str(raw or "").strip()))
 
 
 def _parse_flow_stages(name: str, raw_stages: Any) -> tuple[FlowStage, ...]:

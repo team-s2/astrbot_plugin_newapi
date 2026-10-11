@@ -5,9 +5,11 @@ date axis and the 5h window on an hour axis, each drawn where it falls in time
 with dark = used and light = remaining; an orange line marks now, and used
 quota past it is ahead of pace and turns red. Reset cards get a third, narrow
 date axis at the end of the row, one thin lane per card type; Grok, which has
-none, shows its monthly dollar allowance there instead. Between the channel
-name and the weekly window sit two narrow numeric cells for the new-api
-routing knobs (weight and priority). Channels whose upstream query failed
+none, shows its monthly dollar allowance there instead. Under the channel
+name, after its ID and plan, small tags list the new-api groups it belongs to
+(minus the instance's hidden ones). Between the name and the weekly window
+sit two narrow numeric cells, W and P, for the new-api routing knobs (weight
+and priority). Channels whose upstream query failed
 keep their row in place: their windows are blanked and the error is printed
 across the row.
 """
@@ -44,28 +46,40 @@ FIVE_PALE = 0xFFDDF1EE
 CARD = 0xFF5B5BD6
 CARD_LANE = 0xFFE1E1F7
 
-WIDTH = 1388
+WIDTH = 1292
 MARGIN = 24
 PAD = 20
 LEFT = MARGIN + PAD
 RIGHT = WIDTH - MARGIN - PAD
 NAME_W = 192
 # Right edges of the value cells, then the three time axes they introduce.
-WEIGHT_VALUE = 294
-PRIORITY_VALUE = 380
-WEEK_VALUE = 466
-WEEK_X0, WEEK_X1 = 480, 798
-FIVE_VALUE = 866
-FIVE_X0, FIVE_X1 = 880, 1078
-CARD_LABEL = 1092
-CARD_VALUE = 1124
-CARD_X0, CARD_X1 = 1136, RIGHT
+WEIGHT_VALUE = 272
+PRIORITY_VALUE = 304
+WEEK_VALUE = 370
+WEEK_X0, WEEK_X1 = 384, 702
+FIVE_VALUE = 770
+FIVE_X0, FIVE_X1 = 784, 982
+CARD_LABEL = 996
+CARD_VALUE = 1028
+CARD_X0, CARD_X1 = 1040, RIGHT
 TITLE_H = 60
 HEAD_H = 34
 ROW_H = 52
 LANE_DY = 9  # Zhipu's week and 5h card lanes sit this far above/below centre
 CHIP_GAP = 10
 BAR_H = 12
+TAG_H = 15
+TAG_PAD = 4
+TAG_GAP = 4
+# (fill, text) pairs; a group keeps its colour across rows and renders.
+TAG_COLORS = (
+    (0xFFE7E4F8, 0xFF4F43B8),
+    (0xFFDDF1EE, 0xFF0B7A72),
+    (0xFFFCEBDD, 0xFFB15E12),
+    (0xFFE3EEFB, 0xFF2463AE),
+    (0xFFF8E3EC, 0xFFB0336A),
+    (0xFFEBEDF1, 0xFF4B5262),
+)
 
 
 def date_text(timestamp: float, fmt: str = "%m/%d %H:%M") -> str:
@@ -147,7 +161,33 @@ def card_axis(rows: list[ChannelQuota], now: float) -> Axis:
     return Axis(start, end, CARD_X0, CARD_X1)
 
 
-def draw_name(p: Painter, cy: float, row: ChannelQuota):
+def tag_color(group: str) -> tuple[int, int]:
+    """A stable palette pick: str hashes are salted per process, so sum bytes."""
+    return TAG_COLORS[sum(group.encode()) % len(TAG_COLORS)]
+
+
+def group_tags(p: Painter, x: float, cy: float, groups: list[str], right: float):
+    """Pills from ``x`` rightwards; groups that do not fit collapse into +n."""
+    widths = [p.measure(group, 10.5, "bold") + 2 * TAG_PAD for group in groups]
+    shown = len(groups)
+    while shown and x + sum(widths[:shown]) + TAG_GAP * (shown - 1) > right:
+        shown -= 1
+        more = p.measure(f"+{len(groups) - shown}", 10.5, "bold") + 2 * TAG_PAD
+        if x + sum(widths[:shown]) + TAG_GAP * shown + more <= right:
+            break
+    for group, width in zip(groups[:shown], widths):
+        fill, ink = tag_color(group)
+        p.rect(x, cy - TAG_H / 2, x + width, cy + TAG_H / 2, fill, 4)
+        p.text(x + width / 2, cy, group, 10.5, ink, "bold", "center")
+        x += width + TAG_GAP
+    if shown < len(groups):
+        label = f"+{len(groups) - shown}"
+        width = p.measure(label, 10.5, "bold") + 2 * TAG_PAD
+        p.rect(x, cy - TAG_H / 2, x + width, cy + TAG_H / 2, GRID, 4)
+        p.text(x + width / 2, cy, label, 10.5, SUB, "bold", "center")
+
+
+def draw_name(p: Painter, cy: float, row: ChannelQuota, hidden: frozenset[str]):
     enabled = row.status == "启用"
     p.circle(LEFT + 4, cy, 4, 0xFF2F9E6E if enabled else MUTED)
     tag = p.measure("限流", 11, "bold") + 12 if row.limit_note else 0
@@ -158,9 +198,15 @@ def draw_name(p: Painter, cy: float, row: ChannelQuota):
         p.rect(x, cy - 9, x + tag, cy + 9, OVER, 9)
         p.text(x + tag / 2, cy, "限流", 11, PANEL, "bold", "center")
     parts = [f"#{row.channel_id}", quota_version_label(row)]
-    if not enabled:
+    # The grey dot already says "disabled"; only the less common reasons
+    # (auto-disabled by new-api, unknown status) are spelled out.
+    if not enabled and row.status != "手动禁用":
         parts.append(row.status)
-    p.text(LEFT + 16, cy + 19, p.fit(" · ".join(parts), NAME_W - 16, 12), 12, SUB)
+    meta = p.fit(" · ".join(parts), NAME_W - 16, 12)
+    width = p.text(LEFT + 16, cy + 19, meta, 12, SUB)
+    groups = [group for group in row.groups if group not in hidden]
+    if groups:
+        group_tags(p, LEFT + 22 + width, cy + 19, groups, LEFT + NAME_W)
 
 
 def window_bar(
@@ -337,10 +383,15 @@ def card_cell(p: Painter, cy: float, row: ChannelQuota, axis: Axis, now):
 
 
 def render_quota(
-    rows: list[ChannelQuota], output: Path, now: float, font_path: Path | None = None
+    rows: list[ChannelQuota],
+    output: Path,
+    now: float,
+    font_path: Path | None = None,
+    hidden_groups: frozenset[str] = frozenset(),
 ) -> None:
     """One line per supported channel in channel ID order; unsupported types
-    are left out, and failed channels keep their row with the error printed."""
+    are left out, and failed channels keep their row with the error printed.
+    Groups in ``hidden_groups`` get no tag."""
     supported = [row for row in rows if not row.unsupported]
     live = [row for row in supported if not row.issue]
     body = len(supported) * ROW_H or 64
@@ -376,8 +427,8 @@ def render_quota(
     rows_bottom = rows_top + len(supported) * ROW_H
     week, five = week_axis(live, now), five_axis(now)
     cards = card_axis(live, now)
-    p.text(WEIGHT_VALUE, head, "权重", 12, SUB, "bold", "right")
-    p.text(PRIORITY_VALUE, head, "优先级", 12, SUB, "bold", "right")
+    p.text(WEIGHT_VALUE, head, "W", 12, SUB, "bold", "right")
+    p.text(PRIORITY_VALUE, head, "P", 12, SUB, "bold", "right")
     p.text(WEEK_VALUE, head, "周", 12, SUB, "bold", "right")
     p.text(FIVE_VALUE, head, "5h", 12, SUB, "bold", "right")
     p.text(CARD_VALUE, head, "重置卡", 12, SUB, "bold", "right")
@@ -389,7 +440,7 @@ def render_quota(
     for row in supported:
         p.line(LEFT, y, RIGHT, y, RULE)
         cy = y + ROW_H / 2
-        draw_name(p, cy - 9, row)
+        draw_name(p, cy - 9, row, hidden_groups)
         routing_cell(p, WEIGHT_VALUE, cy, row.weight)
         routing_cell(p, PRIORITY_VALUE, cy, row.priority)
         if not row.issue:

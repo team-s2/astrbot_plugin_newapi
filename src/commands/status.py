@@ -76,7 +76,9 @@ class StatusCommands(CommandBase):
                 else channel_type_name(channel)
             )
             details = f"已{action}渠道 #{target_id}：{name} ({version})"
-            output = await self._render_quota_image(event, rows, time.time())
+            output = await self._render_quota_image(
+                event, instance, rows, time.time()
+            )
             yield event.chain_result(
                 [Plain(details), Image.fromFileSystem(str(output))]
             )

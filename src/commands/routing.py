@@ -89,7 +89,9 @@ class ChannelRoutingCommands(CommandBase):
             details = (
                 f"已将渠道 #{target_id} 的{label}设为 {value}：{name} ({version})"
             )
-            output = await self._render_quota_image(event, rows, time.time())
+            output = await self._render_quota_image(
+                event, instance, rows, time.time()
+            )
             yield event.chain_result(
                 [Plain(details), Image.fromFileSystem(str(output))]
             )

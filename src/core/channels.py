@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .quota import account_kind
+from .quota import account_kind, channel_groups
 
 CHANNEL_TYPES = {
     1: "OpenAI",
@@ -33,9 +33,7 @@ def channel_has_group(channel: dict[str, Any], group: str | None) -> bool:
     """Whether the channel belongs to ``group``; no group matches everything."""
     if not group:
         return True
-    return group in {
-        part.strip() for part in str(channel.get("group") or "").split(",")
-    }
+    return group in channel_groups(channel)
 
 
 def channel_type_name(channel: dict[str, Any]) -> str:

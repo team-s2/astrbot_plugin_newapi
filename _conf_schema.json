@@ -45,6 +45,12 @@
             "hint": "每项填写 UMO=分组，例如 qq:GroupMessage:123456=paid；未配置的群聊显示全部渠道。",
             "default": []
           },
+          "hidden_groups": {
+            "description": "额度图隐藏的分组标签",
+            "type": "list",
+            "hint": "额度图在每个渠道名称下方以标签显示其所属分组；此处列出的分组不显示标签（例如所有渠道都属于的 default），不影响渠道筛选。",
+            "default": []
+          },
           "flow_stages": {
             "description": "流图显示阶段",
             "type": "list",
